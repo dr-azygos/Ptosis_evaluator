@@ -194,3 +194,16 @@ body.ringlight #live { background: #fff; }
 .zoombar { position: absolute; bottom: 8px; left: 8px; display: flex; flex-direction: column; gap: 6px; }
 .zoombar button { width: 40px; height: 40px; padding: 0; border-radius: 10px; background: rgba(15,22,32,.8); font-size: 1.2rem; font-weight: 600; }
 .zoombar button[data-z=reset] { font-size: .8rem; }
+
+.sub { font-size: .85rem; color: var(--muted); margin: 14px 0 6px; font-weight: 600; }
+.refgrid input { padding: 6px 8px; text-align: center; }
+.refgrid td { padding: 4px 3px; }
+.stats { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: .82rem; margin-bottom: 8px; }
+.stats th, .stats td { padding: 4px 3px; border-bottom: 1px solid var(--line); text-align: center; }
+.stats th:first-child, .stats td:first-child { text-align: left; }
+.ba { width: 100%; max-width: 420px; display: block; margin: 4px 0 10px; background: var(--panel2); border-radius: 8px; }
+.ba-axis { stroke: var(--line); stroke-width: 1; }
+.ba-bias { stroke: var(--accent); stroke-width: 1.5; }
+.ba-loa { stroke: var(--warn); stroke-width: 1; stroke-dasharray: 4 3; }
+.ba-pt { fill: var(--text); opacity: .8; }
+.ba-t { fill: var(--muted); font-size: 9px; }

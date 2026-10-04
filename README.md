@@ -47,6 +47,20 @@ You can also analyse an existing photo with **Analyse a photo** or **Upload phot
 
 `R` reflex (yellow) · `U` upper lid (cyan) · `L` lower lid (green) · `C` crease (magenta) · `B` brow (orange) · `M`/`T` medial/lateral canthus
 
+## Learning from your corrections
+
+Every capture keeps the detector's original (raw) marker positions. When you press **Save & learn**, the app records, for each eye, how far you moved the U, L and C markers (mm along the vertical axis) and how much you resized the limbus (I markers). Once 5 eyes are recorded, new captures are pre-corrected by the median of the last 40 corrections, shrunk towards zero while there are few samples (factor n / (n + 5)). The applied correction is shown under Results and in the report.
+
+* Corrections are always measured against the raw detector output, so they don't compound.
+* Crease corrections are learned only where the crease was detected, or where you moved the marker.
+* Turn learning off, or reset it, under **Accuracy & learning** on the home screen.
+
+## Validation against clinical measurements
+
+In Review, enter your own ruler or slit-lamp MRD1, MRD2, PFH, MCD and LF (all optional) before saving. **Accuracy & learning** then shows, per parameter, n, bias (mean app − clinical), 95% limits of agreement, mean absolute error and % within ±1 mm, plus a Bland–Altman plot for MRD1. **Export CSV** gives one row per eye for your own analysis.
+
+All learning and validation data is stored on the phone only (browser local storage). Clearing Safari website data deletes it, so export the CSV regularly.
+
 ## Deploy (GitHub Pages)
 
 Settings → Pages → *Deploy from a branch* → choose the branch and `/ (root)`. Open the Pages URL on the phone. To install it like an app, use *Add to Home screen*.
@@ -59,7 +73,8 @@ To run it locally: `python3 -m http.server 8000`, then open `http://localhost:80
 index.html            UI (home, live AR camera, review/editor)
 css/style.css         Mobile-first styles
 js/app.js             Camera, AR overlay, capture, marker editor, report, history
-js/analysis.js        Landmark geometry, reflex/crease detection, measurements, grading
+js/analysis.js        Landmark geometry, reflex/crease/limbus detection, measurements, grading
+js/learn.js           On-device learning from corrections; validation stats and CSV export
 ```
 
 ## Accuracy notes and limitations

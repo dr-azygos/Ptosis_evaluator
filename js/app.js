@@ -1,7 +1,11 @@
 import {
   EYES, dist, mid, makeFrame, toUV, fromUV, polyAt, extractGeometry, Sampler,
   autoPrimary, autoGaze, measurePrimary, measureGaze, ptosisGrade, lfGrade, suggestions,
-} from './analysis.js?v=10';
+} from './analysis.js?v=11';
+import {
+  PARAMS, MIN_SAMPLES, learnedBias, applyLearned, recordCorrections, recordValidation, loadSamples,
+  loadValidation, validationStats, validationCSV, blandAltmanSVG, resetLearning, resetValidation, describeLearned,
+} from './learn.js?v=11';
 
 const MP_VERSION = '0.10.14';
 const MP_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}`;
@@ -36,7 +40,7 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* storage unavailable */ } },
 };
 const S = {
-  settings: Object.assign({ hvid: 11.7, facing: 'environment', calib: 'hvid', rulerMm: 10, normalMrd1: 4.5 }, store.get('ptosis.settings', {})),
+  settings: Object.assign({ hvid: 11.7, facing: 'environment', calib: 'hvid', rulerMm: 10, normalMrd1: 4.5, learn: true }, store.get('ptosis.settings', {})),
   caps: { primary: null, down: null, up: null },
   stage: 'primary',
   lm: null, lmMode: null, lmLoading: null, lastTs: 0,
@@ -562,7 +566,10 @@ async function captureFromSource(src, W, H, kind, isVideo) {
   sampler.setSource(c, c.width, c.height);
   const cap = buildCap(g, kind, sampler, { refineLids: true });
   cap.canvas = c; cap.W = c.width; cap.H = c.height; cap.time = new Date().toISOString();
-  if (kind === 'primary') initRuler(cap);
+  if (kind === 'primary') {
+    applyLearned(cap, S.settings.learn ? learnedBias() : null, measureForLearning);
+    initRuler(cap);
+  }
   return cap;
 }
 
@@ -586,6 +593,9 @@ function manualCap(c, kind) {
     canvas: c, W, H, time: new Date().toISOString(),
   };
 }
+
+// Learning uses the iris scale (not the ruler) so corrections are comparable.
+const measureForLearning = cap => measurePrimary(cap, { ...S.settings, calib: 'hvid' });
 
 function initRuler(cap) {
   const m = measurePrimary(cap, { ...S.settings, calib: 'hvid' });
@@ -958,9 +968,11 @@ function renderResults() {
   if (mp) html += `<tr><td>MRD1 asymmetry</td><td colspan="2">${Math.abs(mp.eyes.OD.mrd1 - mp.eyes.OS.mrd1).toFixed(1)} mm</td></tr>`;
   el.results.innerHTML = html + '</tbody>';
 
-  el.calibInfo.textContent = mp
+  const L = S.caps.primary && S.caps.primary.learned;
+  const learnedTxt = L ? ` Learned correction applied: ${describeLearned(L)}.` : '';
+  el.calibInfo.textContent = (mp
     ? `Scale: ${mp.method} → ${(mp.mmpp * 1000).toFixed(1)} µm/px. IPD ${f1(mp.ipd)} mm, intercanthal ${f1(mp.icd)} mm.${lf ? ' Gaze captures scaled by intercanthal distance.' : ''}`
-    : 'Capture primary gaze for MRD measurements.';
+    : 'Capture primary gaze for MRD measurements.') + learnedTxt;
 
   const tips = suggestions(mp, lf, S.clinical, S.settings.normalMrd1);
   if (!mp) tips.unshift('Capture primary gaze to grade ptosis.');
@@ -968,6 +980,50 @@ function renderResults() {
   if (Object.values(S.caps).some(c => c && c.manual)) tips.unshift('Face not detected automatically — markers were placed at default positions. Drag every marker onto the eye, including the two I markers onto the nasal and temporal limbus (they set the mm scale).');
   if (mp && !S.caps.primary.manual && EYES.some(s => !mp.eyes[s].reflexFound)) tips.push('Corneal reflex not detected in one eye — MRD1 estimated from iris centre. Verify, or re-capture with the light on.');
   el.interp.innerHTML = tips.map(t => `<li>${t}</li>`).join('');
+}
+
+// ---------- clinical reference values (validation) ----------
+function buildRefGrid() {
+  const head = '<thead><tr><th>mm</th><th>OD (R)</th><th>OS (L)</th></tr></thead>';
+  const rows = PARAMS.map(([k, n]) => `<tr><td>${n}</td>${EYES.map(s => `<td><input type="number" inputmode="decimal" step="0.5" id="ref_${s}_${k}" aria-label="Clinical ${n} ${s}"></td>`).join('')}</tr>`).join('');
+  $('refGrid').innerHTML = head + `<tbody>${rows}</tbody>`;
+}
+function readRef() {
+  const ref = { OD: {}, OS: {} };
+  let any = false;
+  for (const s of EYES) for (const [k] of PARAMS) {
+    const v = parseFloat($(`ref_${s}_${k}`).value);
+    if (Number.isFinite(v)) { ref[s][k] = v; any = true; }
+  }
+  return any ? ref : null;
+}
+function appValues() {
+  const { mp, lf } = computeAll();
+  const out = { OD: {}, OS: {} };
+  for (const s of EYES) {
+    if (mp) for (const k of ['mrd1', 'mrd2', 'pfh', 'mcd']) out[s][k] = mp.eyes[s][k];
+    if (lf) out[s].lf = lf[s];
+  }
+  return out;
+}
+
+function renderLearning() {
+  const b = learnedBias();
+  const fmt = (o, k) => (o.n >= MIN_SAMPLES ? `${o.mm > 0 ? '+' : ''}${o.mm.toFixed(2)} mm` : `${o.n}/${MIN_SAMPLES} eyes`);
+  $('learnSummary').innerHTML = `<p class="hint" style="margin-top:0">Learned from <b>${b.eyes}</b> eye${b.eyes === 1 ? '' : 's'}.
+    Upper lid ${fmt(b.upper)} · Lower lid ${fmt(b.lower)} · Crease ${fmt(b.crease)} ·
+    Limbus ${b.limbus.n >= MIN_SAMPLES ? `×${b.limbus.scale.toFixed(3)}` : `${b.limbus.n}/${MIN_SAMPLES} eyes`}
+    <br>(+ = examiners move the marker down; applied ${S.settings.learn ? 'to new captures' : '— switched off'})</p>`;
+  $('learnOn').checked = S.settings.learn;
+  const st = validationStats();
+  const rows = PARAMS.filter(([k]) => st[k].n).map(([k, n]) => {
+    const x = st[k];
+    return `<tr><td>${n}</td><td>${x.n}</td><td>${x.bias.toFixed(2)}</td><td>${x.n > 1 ? `${x.lo.toFixed(1)} to ${x.hi.toFixed(1)}` : '—'}</td><td>${x.mae.toFixed(2)}</td><td>${Math.round(x.within1 * 100)}%</td></tr>`;
+  }).join('');
+  $('validSummary').innerHTML = rows
+    ? `<table class="stats"><thead><tr><th>mm</th><th>n</th><th>Bias</th><th>95% LoA</th><th>MAE</th><th>±1 mm</th></tr></thead><tbody>${rows}</tbody></table>
+       ${blandAltmanSVG(st.mrd1, 'MRD1')}<p class="hint">Bias = mean (app − clinical); LoA = bias ± 1.96 SD; MAE = mean absolute error. Plot: MRD1, both eyes pooled.</p>`
+    : '<p class="hint">No clinical comparisons yet.</p>';
 }
 
 function reportText() {
@@ -997,6 +1053,12 @@ function reportText() {
   if (c.fatigue) tests.push('Fatigability present');
   if (tests.length) { L.push(''); L.push(tests.join('; ')); }
   if (c.notes) L.push(`Notes: ${c.notes}`);
+  const ref = readRef();
+  if (ref) {
+    L.push(''); L.push('Clinical measurements (ruler / slit-lamp):');
+    for (const [k, n] of PARAMS) if (ref.OD[k] != null || ref.OS[k] != null) L.push(`${pad(n, 30)}${pad(f1(ref.OD[k]), 16)}${f1(ref.OS[k])}`);
+  }
+  if (S.caps.primary && S.caps.primary.learned) L.push(`Learned marker correction applied: ${describeLearned(S.caps.primary.learned)}`);
   const tips = suggestions(mp, lf, c, S.settings.normalMrd1);
   if (tips.length) { L.push(''); L.push('Interpretation:'); tips.forEach(t => L.push(`- ${t}`)); }
   L.push('');
@@ -1156,10 +1218,27 @@ function init() {
   });
   $('btnSave').addEventListener('click', () => {
     if (!S.caps.primary) { msg('Capture primary gaze first.'); return; }
-    const list = store.get('ptosis.history', []);
-    list.unshift({ t: Date.now(), id: $('pId').value.trim(), text: reportText() });
+    const cap = S.caps.primary, id = $('pId').value.trim();
+    const list = store.get('ptosis.history', []).filter(h => h.cap !== cap.time);
+    list.unshift({ t: Date.now(), id, cap: cap.time, text: reportText() });
     store.set('ptosis.history', list.slice(0, 100));
-    renderHistory(); msg('Saved on this device.');
+    const learned = recordCorrections(cap, measureForLearning);
+    const ref = readRef();
+    if (ref) recordValidation({ cap: cap.time, t: Date.now(), id, app: appValues(), ref, learned: cap.learned });
+    renderHistory(); renderLearning();
+    const n = loadSamples().length;
+    msg(`Saved.${learned ? ` Learned from ${learned} eyes (${n} total${n < MIN_SAMPLES ? `; corrections start at ${MIN_SAMPLES}` : ''}).` : ''}${ref ? ' Clinical values recorded.' : ''}`);
+  });
+  $('learnOn').addEventListener('change', e => { S.settings.learn = e.target.checked; saveSettings(); renderLearning(); });
+  $('btnResetLearn').addEventListener('click', () => { if (confirm('Delete all learned marker corrections?')) { resetLearning(); renderLearning(); } });
+  $('btnResetValid').addEventListener('click', () => { if (confirm('Delete all clinical comparison data?')) { resetValidation(); renderLearning(); } });
+  $('btnExportCsv').addEventListener('click', () => {
+    if (!loadValidation().length) { alert('No clinical comparisons saved yet.'); return; }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([validationCSV()], { type: 'text/csv' }));
+    a.download = `ptosis_validation_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   });
   $('btnNew').addEventListener('click', () => {
     S.caps = { primary: null, down: null, up: null };
@@ -1167,6 +1246,7 @@ function init() {
     ['pId', 'pAge', 'notes'].forEach(id => { $(id).value = ''; });
     ['pSex', 'phenyl', 'bells'].forEach(id => { $(id).value = ''; });
     ['jawwink', 'fatigue'].forEach(id => { $(id).checked = false; });
+    document.querySelectorAll('#refGrid input').forEach(i => { i.value = ''; });
     S.rv.which = 'primary'; S.rv.sel = null;
     show('home');
   });
@@ -1176,6 +1256,8 @@ function init() {
     if (e.target.dataset.copy != null) { try { await navigator.clipboard.writeText(list[+e.target.dataset.copy].text); e.target.textContent = 'Copied'; } catch { /* ignore */ } }
   });
 
+  buildRefGrid();
+  renderLearning();
   setupEditor();
   setStage('primary');
   updateToolButtons();
@@ -1186,4 +1268,4 @@ function init() {
 init();
 
 // Exposed for automated testing.
-window.__ptosis = { S, loadPhoto, computeAll, reportText };
+window.__ptosis = { S, loadPhoto, computeAll, reportText, learnedBias, validationStats };

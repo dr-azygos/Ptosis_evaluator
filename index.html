@@ -7,7 +7,7 @@
 <title>Ptosis Evaluator</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="css/style.css?v=10">
+<link rel="stylesheet" href="css/style.css?v=11">
 </head>
 <body>
 
@@ -70,12 +70,26 @@
     </dl>
   </details>
 
+  <details class="card" id="learnCard">
+    <summary>Accuracy &amp; learning</summary>
+    <div id="learnSummary"></div>
+    <label class="check"><input type="checkbox" id="learnOn" checked> Apply learned corrections to new captures</label>
+    <h3 class="sub">Agreement with clinical measurements</h3>
+    <div id="validSummary"></div>
+    <div class="row">
+      <button id="btnExportCsv">Export CSV</button>
+      <button id="btnResetLearn" class="ghost">Reset learning</button>
+      <button id="btnResetValid" class="ghost">Clear validation data</button>
+    </div>
+    <p class="hint">Learning: every time you save, the app records how far you moved its U, L, C and I markers. After 5 eyes it starts correcting new captures by the typical amount. Validation: enter your ruler / slit-lamp values in Review before saving. All data stays on this phone.</p>
+  </details>
+
   <details class="card" id="historyCard">
     <summary>Saved evaluations (<span id="histCount">0</span>)</summary>
     <div id="historyList"></div>
   </details>
 
-  <p class="disclaimer">Decision-support tool for trained clinicians. Measurements depend on camera position, fixation and calibration; verify clinically with a ruler before surgical planning.<br><span id="build">Build 10</span></p>
+  <p class="disclaimer">Decision-support tool for trained clinicians. Measurements depend on camera position, fixation and calibration; verify clinically with a ruler before surgical planning.<br><span id="build">Build 11</span></p>
 </section>
 
 <!-- ============ LIVE ============ -->
@@ -159,6 +173,12 @@
     </div>
 
     <div class="card">
+      <h2>Clinical measurements (ruler / slit-lamp)</h2>
+      <p class="hint">Optional. Enter your own measurements to track the app's accuracy. Saved with the evaluation.</p>
+      <table class="results refgrid" id="refGrid"></table>
+    </div>
+
+    <div class="card">
       <h2>Calibration</h2>
       <div class="grid3">
         <label>Method
@@ -198,7 +218,7 @@
       <button id="btnCopy">Copy report</button>
       <button id="btnShare">Share</button>
       <button id="btnImage">Save image</button>
-      <button id="btnSave" class="primary">Save to history</button>
+      <button id="btnSave" class="primary">Save &amp; learn</button>
       <button id="btnNew" class="ghost">New patient</button>
     </div>
     <p id="reviewMsg" class="msg"></p>
@@ -206,6 +226,6 @@
   </div>
 </section>
 
-<script type="module" src="js/app.js?v=10"></script>
+<script type="module" src="js/app.js?v=11"></script>
 </body>
 </html>
