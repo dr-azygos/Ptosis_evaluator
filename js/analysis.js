@@ -228,10 +228,60 @@ export function findCrease(sampler, F, upper, brow, mmpp) {
   return { pt: fromUV(F, U.u, vStart - best), prominence: bestProm };
 }
 
+// Limbus (corneal edge): scan horizontal rows across the lower half of the
+// iris — the part least often covered by the upper lid — for the sharpest
+// dark-iris → bright-sclera step on each side. Each row's chord gives a radius
+// estimate (r² = half-chord² + row offset²); the median of the rows is used.
+// Returns null when the edges are not clear enough (falls back to the model).
+export function findLimbus(sampler, F, c, r0) {
+  const P = sampler.patch(c.x - 1.7 * r0, c.y - 1.7 * r0, 3.4 * r0 + 2, 3.4 * r0 + 2);
+  if (!P || r0 < 6) return null;
+  const at = p => {
+    const x = p.x - P.x - 0.5, y = p.y - P.y - 0.5;
+    const x0 = Math.floor(x), y0 = Math.floor(y);
+    if (x0 < 0 || y0 < 0 || x0 + 1 >= P.w || y0 + 1 >= P.h) return NaN;
+    const fx = x - x0, fy = y - y0, i = y0 * P.w + x0, g = P.gray;
+    return (g[i] * (1 - fx) + g[i + 1] * fx) * (1 - fy) + (g[i + P.w] * (1 - fx) + g[i + P.w + 1] * fx) * fy;
+  };
+  const C = toUV(F, c);
+  const step = 0.5, t0 = 0.55 * r0, t1 = 1.45 * r0;
+  const n = Math.floor((t1 - t0) / step);
+  const k = Math.max(2, Math.round(0.07 * r0 / step));
+  const sm = Math.max(1, Math.round(0.03 * r0 / step));
+  const edge = (dv, dir) => {
+    const raw = new Float32Array(n);
+    for (let i = 0; i < n; i++) raw[i] = at(fromUV(F, C.u + dir * (t0 + i * step), C.v + dv));
+    const g = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      let a = 0, m = 0;
+      for (let j = Math.max(0, i - sm); j <= Math.min(n - 1, i + sm); j++) if (!Number.isNaN(raw[j])) { a += raw[j]; m++; }
+      g[i] = m ? a / m : NaN;
+    }
+    let best = -1, bi = -1;
+    for (let i = k; i < n - k; i++) {
+      const d = g[i + k] - g[i - k];
+      if (d > best) { best = d; bi = i; }
+    }
+    return best >= 14 ? C.u + dir * (t0 + bi * step) : null;
+  };
+  const rs = [], cs = [];
+  for (const f of [0, 0.1, 0.2, 0.3, 0.4]) {
+    const dv = f * r0;
+    const a = edge(dv, -1), b = edge(dv, 1);
+    if (a == null || b == null) continue;
+    const half = (b - a) / 2;
+    rs.push(Math.sqrt(half * half + dv * dv));
+    cs.push((a + b) / 2);
+  }
+  if (rs.length < 3) return null;
+  const med = arr => arr.slice().sort((x, y) => x - y)[arr.length >> 1];
+  const r = med(rs), cu = med(cs);
+  if (r < 0.75 * r0 || r > 1.3 * r0) return null;
+  return { r, c: fromUV(F, cu, C.v) };
+}
+
 // ---------- auto-placement of measurement handles ----------
 export function autoPrimary(g, sampler, opts = {}) {
-  const irisDiamPx = g.OD.iris.r + g.OS.iris.r; // mean diameter
-  const mmpp = opts.hvid / irisDiamPx;
   const reflex = {}, found = {};
   for (const s of EYES) {
     const det = sampler ? findReflex(sampler, g[s].iris) : null;
@@ -239,9 +289,17 @@ export function autoPrimary(g, sampler, opts = {}) {
     reflex[s] = det ? { x: det.x, y: det.y } : { ...g[s].iris.c };
   }
   const F = makeFrame(reflex.OD, reflex.OS, g.nose);
+  const limb = {};
+  for (const s of EYES) {
+    const det = sampler ? findLimbus(sampler, F, g[s].iris.c, g[s].iris.r) : null;
+    limb[s] = det ? { ...det, found: true } : { c: g[s].iris.c, r: g[s].iris.r, found: false };
+  }
+  const irisDiamPx = limb.OD.r + limb.OS.r; // mean diameter
+  const mmpp = opts.hvid / irisDiamPx;
   const eyes = {};
   for (const s of EYES) {
     const e = g[s], R = toUV(F, reflex[s]);
+    const L = toUV(F, limb[s].c), nasal = s === 'OD' ? 1 : -1;
     const upper = polyAt(F, e.upper, R.u) || polyApex(F, e.upper);
     const lower = polyAt(F, e.lower, R.u) || fromUV(F, R.u, toUV(F, e.lower[4]).v);
     const brow = polyAt(F, e.brow, R.u) || e.brow[2];
@@ -253,9 +311,11 @@ export function autoPrimary(g, sampler, opts = {}) {
         reflex: reflex[s], upper, lower, brow,
         crease: crease ? crease.pt : fromUV(F, up.u, up.v - 7 / mmpp),
         med: e.inner, lat: e.outer,
+        limbN: fromUV(F, L.u + nasal * limb[s].r, L.v),
+        limbT: fromUV(F, L.u - nasal * limb[s].r, L.v),
       },
-      flags: { reflex: found[s], crease: !!crease },
-      irisRpx: e.iris.r,
+      flags: { reflex: found[s], crease: !!crease, limbus: limb[s].found },
+      irisRpx: limb[s].r,
     };
   }
   return { kind: 'primary', irisDiamPx, eyes, nose: { ...g.nose } };
@@ -304,7 +364,8 @@ export function measurePrimary(cap, settings) {
       brow: (v(h.reflex) - v(h.brow)) * mmpp,
       coverage: Math.max(0, irisR - mrd1), // mm of cornea covered by upper lid
       scleralShowInf: Math.max(0, mrd2 - irisR),
-      reflexFound: flags.reflex, creaseAuto: flags.crease,
+      hvid: 2 * irisRpx * mmpp,
+      reflexFound: flags.reflex, creaseAuto: flags.crease, limbusAuto: flags.limbus !== false,
     };
   }
   out.icd = dist(cap.eyes.OD.h.med, cap.eyes.OS.h.med) * mmpp;

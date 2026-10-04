@@ -427,13 +427,13 @@ function updateLivePanel() {
 
   const m = cap ? measureCap(cap) : null;
   const val = (s, k) => (m ? f1(m.eyes[s][k]) : '—');
-  let rows;
-  if (S.stage === 'primary') {
-    rows = [['MRD1', 'mrd1'], ['MRD2', 'mrd2'], ['PFH', 'pfh'], ['MCD', 'mcd']].map(([n, k]) => `<tr><td>${n}</td><td>${val('OD', k)}</td><td>${val('OS', k)}</td></tr>`).join('');
-  } else {
-    rows = `<tr><td>Lid height</td><td>${val('OD', 'lidHeight')}</td><td>${val('OS', 'lidHeight')}</td></tr>`;
-  }
-  el.liveTable.innerHTML = `<thead><tr><th>mm</th><th>OD (R)</th><th>OS (L)</th></tr></thead><tbody>${rows}</tbody>`;
+  // Eyes as rows, parameters as columns: three short rows fit small phones.
+  const cols = S.stage === 'primary'
+    ? [['MRD1', 'mrd1'], ['MRD2', 'mrd2'], ['PFH', 'pfh'], ['MCD', 'mcd'], ['HVID', 'hvid']]
+    : [['Lid height above canthi', 'lidHeight']];
+  const head = cols.map(([n]) => `<th>${n}</th>`).join('');
+  const rows = EYES.map(s => `<tr><td>${s}</td>${cols.map(([, k]) => `<td>${val(s, k)}</td>`).join('')}</tr>`).join('');
+  el.liveTable.innerHTML = `<thead><tr><th>mm</th>${head}</tr></thead><tbody>${rows}</tbody>`;
 }
 
 async function goLive(stage) {
@@ -598,7 +598,7 @@ function fitEditorHeight(cap) {
     const b = S.rv.view === 'both' ? bbox(pts, 0.22, 0.15) : bbox(pts, 0.45, 0.2);
     aspect = b.h / b.w;
   }
-  const h = Math.max(260, Math.min(window.innerHeight * 0.62, w * aspect));
+  const h = Math.max(220, Math.min(window.innerHeight * 0.5, w * aspect));
   wrap.style.height = `${Math.round(h)}px`;
 }
 
@@ -731,6 +731,10 @@ function resultRows(R) {
     ['Corneal coverage (upper lid)', 'coverage', 'Iris radius − MRD1'],
     ['Inferior scleral show', 'scleralShowInf', 'MRD2 − iris radius'],
   ].map(([name, k, sub]) => ({ name, sub, OD: e('OD', k), OS: e('OS', k), key: k }));
+  if (mp) {
+    const ruler = S.settings.calib === 'ruler' && S.caps.primary.ruler;
+    rows.push({ name: 'Corneal diameter (HVID)', sub: ruler ? 'Limbus to limbus, measured with ruler' : `Limbus to limbus; mean set to ${S.settings.hvid} mm`, OD: e('OD', 'hvid'), OS: e('OS', 'hvid'), key: 'hvid' });
+  }
   rows.push({ name: 'Lid height, down-gaze', sub: 'Above intercanthal line', OD: md && md.eyes.OD.lidHeight, OS: md && md.eyes.OS.lidHeight });
   rows.push({ name: 'Lid height, up-gaze', sub: 'Above intercanthal line', OD: mu && mu.eyes.OD.lidHeight, OS: mu && mu.eyes.OS.lidHeight });
   rows.push({ name: 'Levator function', sub: 'Up − down excursion', OD: lf && lf.OD, OS: lf && lf.OS, key: 'lf' });
@@ -746,6 +750,7 @@ function renderResults() {
     if (r.key === 'mrd1' && mp && !mp.eyes[s].reflexFound) v += '<small class="flag">reflex est.</small>';
     if (r.key === 'mcd' && mp && !mp.eyes[s].creaseAuto) v += '<small class="flag">check crease</small>';
     if (r.key === 'lf' && lf) v += `<small>${lfGrade(lf[s])}</small>`;
+    if (r.key === 'hvid' && mp && !mp.eyes[s].limbusAuto) v += '<small class="flag">check I markers</small>';
     return `<td>${v}</td>`;
   };
   let html = '<thead><tr><th>mm</th><th>OD (R)</th><th>OS (L)</th></tr></thead><tbody>';

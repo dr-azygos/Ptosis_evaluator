@@ -26,7 +26,7 @@ You can also record the phenylephrine test, Bell's phenomenon, jaw-winking and f
 
 ## Calibration (pixels → mm)
 
-* **HVID (default):** uses the corneal diameter (white-to-white), 11.7 mm for an average adult. Enter the measured value if you have it. Use a smaller value for children.
+* **HVID (default):** the limbus (iris–sclera edge) is detected automatically in each eye by scanning horizontal rows across the lower half of the cornea, and the I markers are placed on it (they are draggable). The mean of the two eyes is scaled to the HVID value, 11.7 mm for an average adult. Enter the measured value if you have it, and use a smaller value for children. A photo alone cannot give the absolute corneal size; use the ruler mode to measure HVID in mm.
 * **Ruler or sticker:** stick a mm scale or a sticker of known size on the forehead. In Review, choose *Ruler* and drag the two ◆ markers onto its ends.
 * The down-gaze and up-gaze captures are scaled by the intercanthal distance from the primary capture. Vertical gaze changes the apparent shape of the iris, so the iris is not used to scale those captures.
 

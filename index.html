@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0f1620">
 <title>Ptosis Evaluator</title>
 <link rel="manifest" href="manifest.webmanifest">
@@ -33,15 +33,15 @@
     <div class="grid2">
       <label>Camera
         <select id="facing">
-          <option value="environment">Rear camera + torch (examiner holds phone)</option>
-          <option value="user">Front camera (self / screen light)</option>
+          <option value="environment">Rear camera + torch</option>
+          <option value="user">Front camera (selfie)</option>
         </select>
       </label>
       <label>Corneal diameter (HVID, mm)
         <input id="hvid" type="number" step="0.1" min="9" max="14" value="11.7">
       </label>
     </div>
-    <p class="hint">HVID calibrates mm per pixel. Adult mean 11.7 mm; use the measured white-to-white if known, or the forehead-ruler calibration in Review.</p>
+    <p class="hint">The limbus (corneal edge) is found automatically in each eye; this value is the mm size it is scaled to. Adult mean 11.7 mm. Enter the measured white-to-white if known, or use the forehead ruler in Review for a true mm measurement.</p>
     <div class="row">
       <button id="btnStart" class="primary big">Start camera</button>
       <label class="button big ghost">Analyse a photo<input id="fileHome" type="file" accept="image/*" hidden></label>
@@ -85,6 +85,7 @@
     <div class="topbar">
       <button id="btnBack" class="icon" aria-label="Back">←</button>
       <div id="checks" class="checks"></div>
+      <button id="btnToReview" class="pill">Review</button>
     </div>
     <div id="loading" class="loading">Loading face model…</div>
     <div id="instruction" class="instruction"></div>
@@ -93,17 +94,16 @@
   <div class="live-panel">
     <table class="readout" id="liveTable"></table>
     <div class="seg" id="stageSeg" role="tablist">
-      <button data-stage="primary" class="on">Primary gaze</button>
+      <button data-stage="primary" class="on">Primary</button>
       <button data-stage="down">Down-gaze</button>
       <button data-stage="up">Up-gaze</button>
     </div>
     <div class="controls">
       <button id="btnTorch" class="tool" aria-pressed="false">Torch</button>
-      <button id="btnRing" class="tool" aria-pressed="false">Ring light</button>
-      <button id="btnZoom" class="tool" aria-pressed="true">Eye zoom</button>
-      <button id="btnFlip" class="tool">Flip</button>
+      <button id="btnRing" class="tool" aria-pressed="false">Light</button>
       <button id="btnCapture" class="capture" aria-label="Capture" disabled></button>
-      <button id="btnToReview" class="tool">Review</button>
+      <button id="btnZoom" class="tool" aria-pressed="true">Zoom</button>
+      <button id="btnFlip" class="tool">Flip</button>
     </div>
   </div>
 </section>

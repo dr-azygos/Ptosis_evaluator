@@ -22,6 +22,7 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body {
   background: var(--bg);
   color: var(--text);
@@ -50,7 +51,8 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: .85rem; colo
 label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--text); font-size: .95rem; }
 input, select, textarea {
   background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
-  padding: 9px 10px; color: var(--text); width: 100%; min-width: 0;
+  padding: 8px 10px; color: var(--text); width: 100%; min-width: 0;
+  font-size: 16px; /* below 16px iOS Safari zooms the page on focus */
 }
 input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
@@ -94,6 +96,7 @@ body.ringlight .stage-wrap { border: 18px solid #fff; background: #fff; }
 body.ringlight #live { background: #fff; }
 
 .topbar { position: absolute; top: calc(8px + var(--safe-t)); left: 8px; right: 8px; display: flex; gap: 8px; align-items: flex-start; }
+.pill { margin-left: auto; flex: none; padding: 7px 12px; border-radius: 999px; background: rgba(15,22,32,.8); font-size: .8rem; }
 .icon { width: 40px; height: 40px; padding: 0; border-radius: 50%; background: rgba(15,22,32,.75); font-size: 1.2rem; flex: none; }
 .checks { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip { font-size: .75rem; padding: 4px 9px; border-radius: 999px; background: rgba(15,22,32,.78); border: 1px solid var(--line); white-space: nowrap; }
@@ -118,8 +121,8 @@ body.ringlight #live { background: #fff; }
 .seg.small { margin: 0; }
 .seg.small button { padding: 5px 8px; font-size: .78rem; }
 
-.controls { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-.tool { flex: 1; padding: 8px 4px; font-size: .78rem; min-width: 0; }
+.controls { display: grid; grid-template-columns: 1fr 1fr auto 1fr 1fr; align-items: center; gap: 6px; }
+.tool { padding: 8px 2px; font-size: .78rem; min-width: 0; }
 .tool[aria-pressed=true] { border-color: var(--accent); color: var(--accent); }
 .capture { flex: none; width: 64px; height: 64px; border-radius: 50%; padding: 0; background: #fff; border: 4px solid var(--accent); box-shadow: 0 0 0 3px #fff inset; }
 .capture:active { transform: scale(.94); }
@@ -128,7 +131,7 @@ body.ringlight #live { background: #fff; }
 #review.active { height: auto; min-height: 100dvh; }
 .review-top { display: flex; gap: 8px; align-items: center; padding: calc(8px + var(--safe-t)) 8px 8px; background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .review-top .seg { flex: 1 1 160px; }
-.editor { height: 58dvh; min-height: 300px; flex: none; }
+.editor { height: 50dvh; min-height: 220px; flex: none; }
 .empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; background: var(--bg); padding: 16px; text-align: center; }
 .empty[hidden] { display: none; }
 .nudge { position: absolute; right: 8px; bottom: 8px; display: grid; justify-items: center; gap: 2px; background: rgba(15,22,32,.85); border-radius: 12px; padding: 6px; }
@@ -148,3 +151,40 @@ body.ringlight #live { background: #fff; }
 .interp { margin: 0; padding-left: 18px; }
 .interp li { margin-bottom: 6px; }
 .actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
+
+/* ---------- compact phones (iPhone SE … iPhone Pro) ---------- */
+@media (max-width: 440px) {
+  body { font-size: 14px; }
+  #home { padding: calc(10px + var(--safe-t)) 12px calc(16px + var(--safe-b)); gap: 10px; }
+  .hero h1 { font-size: 1.3rem; }
+  .logo { width: 40px; height: 40px; }
+  .card { padding: 12px; }
+  .card h2 { font-size: .8rem; margin-bottom: 8px; }
+  label { font-size: .78rem; margin-bottom: 8px; }
+  .grid3 { grid-template-columns: 1fr 1fr; }
+  .grid3 > label:first-child { grid-column: 1 / -1; }
+  .big { min-height: 44px; font-size: .95rem; }
+
+  .live-panel { padding: 6px 8px calc(8px + var(--safe-b)); }
+  .readout { font-size: .8rem; margin-bottom: 6px; }
+  .readout th, .readout td { padding: 1px 3px; }
+  .seg { margin-bottom: 6px; }
+  .seg button { padding: 6px 2px; font-size: .78rem; }
+  .capture { width: 56px; height: 56px; }
+  .chip { font-size: .7rem; padding: 3px 7px; }
+  .icon { width: 36px; height: 36px; }
+
+  .review-top { gap: 6px; padding: calc(6px + var(--safe-t)) 6px 6px; }
+  #capSeg { flex: 1 1 0; }
+  #viewSeg { flex: 1 1 100%; }
+  .review-top .seg.small button { padding: 5px 2px; }
+  .review-body { padding: 8px 10px calc(16px + var(--safe-b)); gap: 10px; }
+  .results { font-size: .88rem; }
+  .results th, .results td { padding: 5px 3px; }
+  .results td small { font-size: .68rem; }
+  .actions { grid-template-columns: 1fr 1fr; }
+  .actions button { padding: 9px 6px; font-size: .85rem; }
+}
+@media (max-height: 700px) {
+  .capture { width: 52px; height: 52px; }
+}
