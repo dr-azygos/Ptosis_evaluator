@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0f1620">
 <title>Ptosis Evaluator</title>
 <link rel="manifest" href="manifest.webmanifest">
@@ -135,6 +135,11 @@
         <label class="button ghost">Upload photo<input id="fileReview" type="file" accept="image/*" hidden></label>
       </div>
     </div>
+    <div class="zoombar" id="zoombar">
+      <button data-z="in" aria-label="Zoom in">+</button>
+      <button data-z="out" aria-label="Zoom out">−</button>
+      <button data-z="reset" aria-label="Reset zoom">1×</button>
+    </div>
     <div class="nudge" id="nudge" hidden>
       <span id="nudgeLabel"></span>
       <button data-d="0,-1">↑</button>
@@ -144,7 +149,7 @@
   </div>
 
   <div class="review-body">
-    <p class="hint">Drag markers to correct. Tap a marker to select it, then nudge with the arrows.</p>
+    <p class="hint">Pinch or use + / − to zoom the photo, drag empty space to pan. Drag markers to correct them; tap one to select it and nudge with the arrows.</p>
 
     <div class="card">
       <h2>Results</h2>

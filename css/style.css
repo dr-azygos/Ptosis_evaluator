@@ -189,3 +189,7 @@ body.ringlight #live { background: #fff; }
 @media (max-height: 700px) {
   .capture { width: 52px; height: 52px; }
 }
+
+.zoombar { position: absolute; bottom: 8px; left: 8px; display: flex; flex-direction: column; gap: 6px; }
+.zoombar button { width: 40px; height: 40px; padding: 0; border-radius: 10px; background: rgba(15,22,32,.8); font-size: 1.2rem; font-weight: 600; }
+.zoombar button[data-z=reset] { font-size: .8rem; }

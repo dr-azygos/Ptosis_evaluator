@@ -37,7 +37,7 @@ You can also record the phenylephrine test, Bell's phenomenon, jaw-winking and f
    If the torch is not available (for example on iOS Safari), use a pen-torch held beside the lens, or the front camera with the **Ring light** button, which turns the screen white.
 3. Keep the forehead, both eyes and the nose in the frame. The live view shows only an AR alignment guide (eye brackets, iris rings, reflex dots, level line). When the checks (distance, level, facing, reflex) stay green, the app takes the photo automatically. It takes a short burst and keeps the frame with the eyes most open, so a blink is never measured. Turn **Auto** off to use the shutter button instead; tap the preview to toggle eye zoom.
    The app copes with a phone held sideways or upside-down and with tight close-ups. If it still finds no face, press the shutter anyway: the markers start in default positions for you to drag into place. The two **I** markers go on the nasal and temporal limbus; they set the mm scale.
-4. In **Review**, drag markers to correct them. A loupe magnifies the area while you drag, and the arrow pad nudges the selected marker by about 0.1 mm.
+4. In **Review**, pinch (or use + / −) to zoom the photo up to 10× and drag empty space to pan. Drag markers to correct them; a loupe magnifies the area while you drag, and the arrow pad nudges the selected marker by about 0.1 mm. On the camera screen, pinch to zoom the camera.
 5. For levator function, open **Down-gaze** and capture, then **Up-gaze** and capture. Fix the brow with your thumb for both.
 6. Copy, share or save the report, or save an annotated image. History is kept only on this phone.
 

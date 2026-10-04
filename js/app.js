@@ -42,7 +42,7 @@ const S = {
   lm: null, lmMode: null, lmLoading: null, lastTs: 0,
   stream: null, track: null, torch: false, ring: false, zoom: true, auto: true,
   live: { running: false, cap: null, geom: null, view: null, lastTime: -1, ok: false, cfg: { q: 0, pad: 1 }, miss: 0, src: null, rc: null, W: 0, H: 0 },
-  rv: { which: 'primary', view: 'both', drag: null, sel: null, T: null, pending: false },
+  rv: { which: 'primary', view: 'both', drag: null, sel: null, T: null, pending: false, zoom: 1, pan: { x: 0, y: 0 }, pointers: new Map(), pinch: null, panning: null },
   clinical: { phenylephrine: '', bells: '', jawwink: false, fatigue: false, notes: '' },
 };
 const sampler = new Sampler();
@@ -96,6 +96,8 @@ async function startCamera() {
   let caps = {};
   try { caps = S.track.getCapabilities ? S.track.getCapabilities() : {}; } catch { /* unsupported */ }
   const torchOk = !!caps.torch;
+  S.zoomCaps = caps.zoom && caps.zoom.max > caps.zoom.min ? caps.zoom : null;
+  S.live.zf = 1;
   $('btnTorch').disabled = !torchOk;
   $('btnTorch').title = torchOk ? '' : 'Torch not available on this camera/browser — use Ring light or a pen-torch beside the lens';
   S.torch = false;
@@ -437,10 +439,22 @@ function drawLive() {
   const prev = S.live.view;
   if (prev && S.zoom && cap) box = { x: prev.x + (box.x - prev.x) * 0.15, y: prev.y + (box.y - prev.y) * 0.15, w: prev.w + (box.w - prev.w) * 0.15, h: prev.h + (box.h - prev.h) * 0.15 };
   S.live.view = box;
+  const dz = S.zoomCaps ? 1 : S.live.zf || 1; // digital zoom when the camera has none
+  if (dz > 1) box = { x: box.x + box.w * (1 - 1 / dz) / 2, y: box.y + box.h * (1 - 1 / dz) / 2, w: box.w / dz, h: box.h / dz };
   const T = makeT(box, c.width, c.height, S.settings.facing === 'user');
   ctx.fillStyle = S.ring ? '#fff' : '#000'; ctx.fillRect(0, 0, c.width, c.height);
   drawImageView(ctx, src, W, H, T);
   if (cap) drawGuide(ctx, T, cap, S.live.geom, u, S.live.ok);
+  if ((S.live.zf || 1) > 1.01) label(ctx, `${S.live.zf.toFixed(1)}×`, { x: c.width - 12 * u, y: c.height - 16 * u }, '#fff', u, 'right');
+}
+
+async function setLiveZoom(z) {
+  const zc = S.zoomCaps;
+  const max = zc ? zc.max / zc.min : 4;
+  S.live.zf = Math.max(1, Math.min(max, z));
+  if (zc && S.track) {
+    try { await S.track.applyConstraints({ advanced: [{ zoom: zc.min * S.live.zf }] }); } catch { /* keep digital */ }
+  }
 }
 
 function chip(text, cls) { return `<span class="chip ${cls}">${text}</span>`; }
@@ -668,8 +682,21 @@ function reviewT() {
     if (cap.kind === 'primary' && S.settings.calib === 'ruler' && cap.ruler) pts.push(cap.ruler.a, cap.ruler.b);
     box = bbox(pts, 0.22, 0.15);
   } else box = bbox(capPoints(cap, [S.rv.view]), 0.45, 0.2);
+  // User zoom/pan on top of the chosen view.
+  const z = S.rv.zoom, cx = box.x + box.w / 2 + S.rv.pan.x, cy = box.y + box.h / 2 + S.rv.pan.y;
+  box = { x: cx - box.w / z / 2, y: cy - box.h / z / 2, w: box.w / z, h: box.h / z };
   return makeT(box, c.width, c.height, false);
 }
+
+// Zoom so the image point under screen point `m` stays under it.
+function zoomAt(z, m) {
+  const T0 = reviewT(), p = T0.toI(m);
+  S.rv.zoom = Math.max(1, Math.min(10, z));
+  if (S.rv.zoom === 1) { S.rv.pan = { x: 0, y: 0 }; return; }
+  const T1 = reviewT(), s = T1.toS(p);
+  S.rv.pan = { x: S.rv.pan.x + (s.x - m.x) / T1.k, y: S.rv.pan.y + (s.y - m.y) / T1.k };
+}
+function resetZoom() { S.rv.zoom = 1; S.rv.pan = { x: 0, y: 0 }; }
 
 // Size the editor to the region being shown so a phone screen isn't mostly forehead.
 function fitEditorHeight(cap) {
@@ -734,10 +761,28 @@ function canvasPt(e) {
 }
 function setupEditor() {
   const c = el.editCanvas;
+  const P = S.rv.pointers;
+  const pinchState = () => {
+    const [a, b] = [...P.values()];
+    return { d: dist(a, b), m: mid(a, b) };
+  };
   c.addEventListener('pointerdown', e => {
     const cap = S.caps[S.rv.which];
     if (!cap || !S.rv.T) return;
-    const q = canvasPt(e), u = c.width / c.getBoundingClientRect().width;
+    const q = canvasPt(e);
+    P.set(e.pointerId, q);
+    try { c.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
+    e.preventDefault();
+    if (P.size === 2) {
+      // Second finger: switch from dragging/panning to pinch-zoom.
+      S.rv.drag = null; S.rv.panning = null;
+      const st = pinchState();
+      S.rv.pinch = { d0: st.d, z0: S.rv.zoom, m: st.m };
+      scheduleDraw();
+      return;
+    }
+    if (P.size > 2) return;
+    const u = c.width / c.getBoundingClientRect().width;
     let best = null, bd = 28 * u;
     for (const H of handleList(cap)) {
       const d = dist(S.rv.T.toS(H.get()), q);
@@ -747,20 +792,58 @@ function setupEditor() {
       const s = S.rv.T.toS(best.get());
       S.rv.drag = { h: best, off: { x: s.x - q.x, y: s.y - q.y } };
       S.rv.sel = { eye: best.eye, key: best.key };
-      c.setPointerCapture(e.pointerId);
-      e.preventDefault();
-    } else S.rv.sel = null;
+    } else {
+      S.rv.sel = null;
+      S.rv.panning = { last: q };
+    }
     scheduleDraw();
   });
   c.addEventListener('pointermove', e => {
-    if (!S.rv.drag) return;
-    const q = canvasPt(e), o = S.rv.drag.off;
-    S.rv.drag.h.set(S.rv.T.toI({ x: q.x + o.x, y: q.y + o.y }));
-    scheduleDraw();
+    if (!P.has(e.pointerId)) return;
+    const q = canvasPt(e);
+    P.set(e.pointerId, q);
+    if (S.rv.pinch && P.size === 2) {
+      const st = pinchState(), pz = S.rv.pinch;
+      // pan with the midpoint, then zoom about it
+      const T = reviewT();
+      S.rv.pan = { x: S.rv.pan.x - (st.m.x - pz.m.x) / T.k, y: S.rv.pan.y - (st.m.y - pz.m.y) / T.k };
+      pz.m = st.m;
+      zoomAt(pz.z0 * st.d / pz.d0, st.m);
+      scheduleDraw();
+    } else if (S.rv.drag) {
+      const o = S.rv.drag.off;
+      S.rv.drag.h.set(S.rv.T.toI({ x: q.x + o.x, y: q.y + o.y }));
+      scheduleDraw();
+    } else if (S.rv.panning && S.rv.zoom > 1) {
+      const T = reviewT(), l = S.rv.panning.last;
+      S.rv.pan = { x: S.rv.pan.x - (q.x - l.x) / T.k, y: S.rv.pan.y - (q.y - l.y) / T.k };
+      S.rv.panning.last = q;
+      scheduleDraw();
+    }
   });
-  const end = () => { if (S.rv.drag) { S.rv.drag = null; scheduleDraw(); } };
+  const end = e => {
+    P.delete(e.pointerId);
+    if (P.size < 2) S.rv.pinch = null;
+    if (P.size === 0) { S.rv.panning = null; if (S.rv.drag) S.rv.drag = null; }
+    scheduleDraw();
+  };
   c.addEventListener('pointerup', end);
   c.addEventListener('pointercancel', end);
+  c.addEventListener('wheel', e => {
+    if (!S.caps[S.rv.which]) return;
+    e.preventDefault();
+    zoomAt(S.rv.zoom * Math.exp(-e.deltaY * 0.002), canvasPt(e));
+    scheduleDraw();
+  }, { passive: false });
+  $('zoombar').addEventListener('click', e => {
+    const z = e.target.dataset.z;
+    if (!z || !S.caps[S.rv.which]) return;
+    const m = { x: c.width / 2, y: c.height / 2 };
+    if (z === 'in') zoomAt(S.rv.zoom * 1.5, m);
+    else if (z === 'out') zoomAt(S.rv.zoom / 1.5, m);
+    else resetZoom();
+    scheduleDraw();
+  });
   $('nudge').addEventListener('click', e => {
     const d = e.target.dataset.d;
     const cap = S.caps[S.rv.which];
@@ -779,6 +862,7 @@ function setupEditor() {
 }
 
 function openReview() {
+  resetZoom();
   show('review');
   syncReviewInputs();
   updateSegs();
@@ -951,7 +1035,31 @@ function init() {
   $('btnTorch').addEventListener('click', () => setTorch(!S.torch));
   $('btnRing').addEventListener('click', () => setRing(!S.ring));
   $('btnAuto').addEventListener('click', () => { S.auto = !S.auto; S.live.okSince = null; updateToolButtons(); });
-  el.liveCanvas.addEventListener('click', () => { S.zoom = !S.zoom; S.live.view = null; });
+  // Live preview: pinch to zoom the camera, tap to toggle eye framing.
+  const LP = new Map();
+  let livePinch = null, pinched = 0;
+  el.liveCanvas.addEventListener('pointerdown', e => {
+    LP.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    try { el.liveCanvas.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
+    if (LP.size === 2) { const [a, b] = [...LP.values()]; livePinch = { d0: dist(a, b), z0: S.live.zf || 1 }; }
+  });
+  el.liveCanvas.addEventListener('pointermove', e => {
+    if (!LP.has(e.pointerId)) return;
+    LP.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (livePinch && LP.size === 2) {
+      const [a, b] = [...LP.values()];
+      setLiveZoom(livePinch.z0 * dist(a, b) / livePinch.d0);
+      pinched = performance.now();
+    }
+  });
+  const liveEnd = e => { LP.delete(e.pointerId); if (LP.size < 2) livePinch = null; };
+  el.liveCanvas.addEventListener('pointerup', liveEnd);
+  el.liveCanvas.addEventListener('pointercancel', liveEnd);
+  el.liveCanvas.addEventListener('wheel', e => { e.preventDefault(); setLiveZoom((S.live.zf || 1) * Math.exp(-e.deltaY * 0.002)); }, { passive: false });
+  el.liveCanvas.addEventListener('click', () => {
+    if (performance.now() - pinched < 400) return; // end of a pinch, not a tap
+    S.zoom = !S.zoom; S.live.view = null;
+  });
   $('btnFlip').addEventListener('click', async () => {
     S.settings.facing = S.settings.facing === 'user' ? 'environment' : 'user';
     $('facing').value = S.settings.facing; saveSettings();
@@ -963,8 +1071,8 @@ function init() {
   $('stageSeg').addEventListener('click', e => { if (e.target.dataset.stage) setStage(e.target.dataset.stage); });
 
   $('btnReviewBack').addEventListener('click', () => goLive(S.rv.which));
-  $('capSeg').addEventListener('click', e => { if (e.target.dataset.cap) { S.rv.which = e.target.dataset.cap; S.rv.sel = null; updateSegs(); scheduleDraw(); } });
-  $('viewSeg').addEventListener('click', e => { if (e.target.dataset.v) { S.rv.view = e.target.dataset.v; updateSegs(); scheduleDraw(); } });
+  $('capSeg').addEventListener('click', e => { if (e.target.dataset.cap) { S.rv.which = e.target.dataset.cap; S.rv.sel = null; resetZoom(); updateSegs(); scheduleDraw(); } });
+  $('viewSeg').addEventListener('click', e => { if (e.target.dataset.v) { S.rv.view = e.target.dataset.v; resetZoom(); updateSegs(); scheduleDraw(); } });
   $('btnCaptureThis').addEventListener('click', () => goLive(S.rv.which));
   $('btnRetake').addEventListener('click', () => goLive(S.rv.which));
   $('fileReview').addEventListener('change', e => { loadPhoto(e.target.files[0], S.rv.which, $('reviewMsg')); e.target.value = ''; });
