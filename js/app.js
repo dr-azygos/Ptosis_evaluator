@@ -1,7 +1,7 @@
 import {
   EYES, dist, mid, makeFrame, toUV, fromUV, polyAt, extractGeometry, Sampler,
   autoPrimary, autoGaze, measurePrimary, measureGaze, ptosisGrade, lfGrade, suggestions,
-} from './analysis.js';
+} from './analysis.js?v=10';
 
 const MP_VERSION = '0.10.14';
 const MP_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}`;
@@ -439,9 +439,16 @@ function drawLive() {
   const prev = S.live.view;
   if (prev && S.zoom && cap) box = { x: prev.x + (box.x - prev.x) * 0.15, y: prev.y + (box.y - prev.y) * 0.15, w: prev.w + (box.w - prev.w) * 0.15, h: prev.h + (box.h - prev.h) * 0.15 };
   S.live.view = box;
+  const mirror = S.settings.facing === 'user';
+  let T = makeT(box, c.width, c.height, mirror);
   const dz = S.zoomCaps ? 1 : S.live.zf || 1; // digital zoom when the camera has none
-  if (dz > 1) box = { x: box.x + box.w * (1 - 1 / dz) / 2, y: box.y + box.h * (1 - 1 / dz) / 2, w: box.w / dz, h: box.h / dz };
-  const T = makeT(box, c.width, c.height, S.settings.facing === 'user');
+  if (dz > 1) {
+    // Preview-only zoom about the eyes (the photo is always the full frame).
+    const eyes = cap ? bbox(capPoints(cap), 0, 0) : null;
+    const cx = eyes ? eyes.x + eyes.w / 2 : T.sx + T.sw / 2, cy = eyes ? eyes.y + eyes.h / 2 : T.sy + T.sh / 2;
+    const w = T.sw / dz, h = T.sh / dz;
+    T = makeT({ x: cx - w / 2, y: cy - h / 2, w, h }, c.width, c.height, mirror);
+  }
   ctx.fillStyle = S.ring ? '#fff' : '#000'; ctx.fillRect(0, 0, c.width, c.height);
   drawImageView(ctx, src, W, H, T);
   if (cap) drawGuide(ctx, T, cap, S.live.geom, u, S.live.ok);
@@ -452,6 +459,7 @@ async function setLiveZoom(z) {
   const zc = S.zoomCaps;
   const max = zc ? zc.max / zc.min : 4;
   S.live.zf = Math.max(1, Math.min(max, z));
+  $('btnLiveZoom').textContent = `${S.live.zf < 1.95 ? S.live.zf.toFixed(1).replace('.0', '') : Math.round(S.live.zf)}×`;
   if (zc && S.track) {
     try { await S.track.applyConstraints({ advanced: [{ zoom: zc.min * S.live.zf }] }); } catch { /* keep digital */ }
   }
@@ -759,8 +767,25 @@ function canvasPt(e) {
   const r = el.editCanvas.getBoundingClientRect(), dpr = el.editCanvas.width / r.width;
   return { x: (e.clientX - r.left) * dpr, y: (e.clientY - r.top) * dpr };
 }
+// iOS Safari turns two-finger pinches into page zoom and cancels the pointer
+// stream; it exposes the pinch through its own gesture events instead. Use
+// those where they exist, and stop the page from zooming over the canvases.
+const HAS_GESTURE = typeof window.GestureEvent !== 'undefined';
+function pinchable(canvas, onScale) {
+  canvas.addEventListener('touchmove', e => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
+  if (!HAS_GESTURE) return;
+  let start = null;
+  canvas.addEventListener('gesturestart', e => { e.preventDefault(); start = onScale.begin(e); }, { passive: false });
+  canvas.addEventListener('gesturechange', e => { e.preventDefault(); if (start) onScale.change(start, e); }, { passive: false });
+  canvas.addEventListener('gestureend', e => { e.preventDefault(); start = null; }, { passive: false });
+}
+
 function setupEditor() {
   const c = el.editCanvas;
+  pinchable(c, {
+    begin: () => { S.rv.drag = null; S.rv.panning = null; return { z0: S.rv.zoom }; },
+    change: (st, e) => { zoomAt(st.z0 * e.scale, canvasPt(e)); scheduleDraw(); },
+  });
   const P = S.rv.pointers;
   const pinchState = () => {
     const [a, b] = [...P.values()];
@@ -802,7 +827,13 @@ function setupEditor() {
     if (!P.has(e.pointerId)) return;
     const q = canvasPt(e);
     P.set(e.pointerId, q);
-    if (S.rv.pinch && P.size === 2) {
+    if (S.rv.pinch && P.size === 2 && HAS_GESTURE) {
+      // Safari: zoom comes from gesture events; just pan with the midpoint.
+      const st = pinchState(), pz = S.rv.pinch, T = reviewT();
+      S.rv.pan = { x: S.rv.pan.x - (st.m.x - pz.m.x) / T.k, y: S.rv.pan.y - (st.m.y - pz.m.y) / T.k };
+      pz.m = st.m;
+      scheduleDraw();
+    } else if (S.rv.pinch && P.size === 2) {
       const st = pinchState(), pz = S.rv.pinch;
       // pan with the midpoint, then zoom about it
       const T = reviewT();
@@ -1038,6 +1069,10 @@ function init() {
   // Live preview: pinch to zoom the camera, tap to toggle eye framing.
   const LP = new Map();
   let livePinch = null, pinched = 0;
+  pinchable(el.liveCanvas, {
+    begin: () => ({ z0: S.live.zf || 1 }),
+    change: (st, e) => { setLiveZoom(st.z0 * e.scale); pinched = performance.now(); },
+  });
   el.liveCanvas.addEventListener('pointerdown', e => {
     LP.set(e.pointerId, { x: e.clientX, y: e.clientY });
     try { el.liveCanvas.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
@@ -1046,7 +1081,7 @@ function init() {
   el.liveCanvas.addEventListener('pointermove', e => {
     if (!LP.has(e.pointerId)) return;
     LP.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (livePinch && LP.size === 2) {
+    if (livePinch && LP.size === 2 && !HAS_GESTURE) {
       const [a, b] = [...LP.values()];
       setLiveZoom(livePinch.z0 * dist(a, b) / livePinch.d0);
       pinched = performance.now();
@@ -1056,6 +1091,11 @@ function init() {
   el.liveCanvas.addEventListener('pointerup', liveEnd);
   el.liveCanvas.addEventListener('pointercancel', liveEnd);
   el.liveCanvas.addEventListener('wheel', e => { e.preventDefault(); setLiveZoom((S.live.zf || 1) * Math.exp(-e.deltaY * 0.002)); }, { passive: false });
+  // Tap to step through 1× → 2× → 3× → 1×.
+  $('btnLiveZoom').addEventListener('click', () => {
+    const z = S.live.zf || 1;
+    setLiveZoom(z < 1.5 ? 2 : z < 2.5 ? 3 : 1);
+  });
   el.liveCanvas.addEventListener('click', () => {
     if (performance.now() - pinched < 400) return; // end of a pinch, not a tap
     S.zoom = !S.zoom; S.live.view = null;

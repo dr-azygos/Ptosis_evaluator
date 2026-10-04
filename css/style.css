@@ -90,12 +90,13 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 #live, #review { height: 100%; }
 #live.active { height: 100dvh; }
 .stage-wrap { position: relative; flex: 1 1 auto; min-height: 0; background: #000; overflow: hidden; }
-.stage-wrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; display: block; }
+.stage-wrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; display: block; }
 #video { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 body.ringlight .stage-wrap { border: 18px solid #fff; background: #fff; }
 body.ringlight #live { background: #fff; }
 
 .topbar { position: absolute; top: calc(8px + var(--safe-t)); left: 8px; right: 8px; display: flex; gap: 8px; align-items: flex-start; }
+.pill + .pill, .pill-tight { margin-left: 0; }
 .pill { margin-left: auto; flex: none; padding: 7px 12px; border-radius: 999px; background: rgba(15,22,32,.8); font-size: .8rem; }
 .icon { width: 40px; height: 40px; padding: 0; border-radius: 50%; background: rgba(15,22,32,.75); font-size: 1.2rem; flex: none; }
 .checks { display: flex; flex-wrap: wrap; gap: 6px; }

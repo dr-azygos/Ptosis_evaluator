@@ -7,7 +7,7 @@
 <title>Ptosis Evaluator</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/style.css?v=10">
 </head>
 <body>
 
@@ -75,7 +75,7 @@
     <div id="historyList"></div>
   </details>
 
-  <p class="disclaimer">Decision-support tool for trained clinicians. Measurements depend on camera position, fixation and calibration; verify clinically with a ruler before surgical planning.</p>
+  <p class="disclaimer">Decision-support tool for trained clinicians. Measurements depend on camera position, fixation and calibration; verify clinically with a ruler before surgical planning.<br><span id="build">Build 10</span></p>
 </section>
 
 <!-- ============ LIVE ============ -->
@@ -86,7 +86,8 @@
     <div class="topbar">
       <button id="btnBack" class="icon" aria-label="Back">←</button>
       <div id="checks" class="checks"></div>
-      <button id="btnToReview" class="pill">Review</button>
+      <button id="btnLiveZoom" class="pill" aria-label="Camera zoom">1×</button>
+      <button id="btnToReview" class="pill pill-tight">Review</button>
     </div>
     <div id="loading" class="loading">Loading face model…</div>
     <div id="instruction" class="instruction"></div>
@@ -205,6 +206,6 @@
   </div>
 </section>
 
-<script type="module" src="js/app.js"></script>
+<script type="module" src="js/app.js?v=10"></script>
 </body>
 </html>
