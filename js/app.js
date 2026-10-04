@@ -1,0 +1,849 @@
+import {
+  EYES, dist, mid, makeFrame, toUV, fromUV, extractGeometry, Sampler,
+  autoPrimary, autoGaze, measurePrimary, measureGaze, ptosisGrade, lfGrade, suggestions,
+} from './analysis.js';
+
+const MP_VERSION = '0.10.14';
+const MP_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}`;
+const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
+const STAGES = ['primary', 'down', 'up'];
+const STAGE_TEXT = {
+  primary: 'Patient looks straight at the light, brows relaxed.',
+  down: 'Patient looks fully DOWN. Fix the brow with your thumb.',
+  up: 'Patient looks fully UP. Keep the brow fixed — no frontalis.',
+};
+const COLORS = {
+  reflex: '#ffe14d', upper: '#35d0ff', lower: '#7dff6b', crease: '#ff5ce1',
+  brow: '#ff9f40', med: '#3ddc84', lat: '#3ddc84', ruler: '#ff6b6b',
+};
+const LETTER = { reflex: 'R', upper: 'U', lower: 'L', crease: 'C', brow: 'B', med: 'M', lat: 'T', a: '◆', b: '◆' };
+const HANDLE_NAME = {
+  reflex: 'light reflex', upper: 'upper lid margin', lower: 'lower lid margin', crease: 'lid crease',
+  brow: 'brow', med: 'medial canthus', lat: 'lateral canthus', a: 'ruler end', b: 'ruler end',
+};
+
+const $ = id => document.getElementById(id);
+const el = {
+  video: $('video'), liveCanvas: $('liveCanvas'), editCanvas: $('editCanvas'),
+  checks: $('checks'), loading: $('loading'), instruction: $('instruction'), liveTable: $('liveTable'),
+  results: $('resultsTable'), interp: $('interp'), calibInfo: $('calibInfo'),
+};
+
+// ---------------- state ----------------
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* storage unavailable */ } },
+};
+const S = {
+  settings: Object.assign({ hvid: 11.7, facing: 'environment', calib: 'hvid', rulerMm: 10, normalMrd1: 4.5 }, store.get('ptosis.settings', {})),
+  caps: { primary: null, down: null, up: null },
+  stage: 'primary',
+  lm: null, lmMode: null, lmLoading: null, lastTs: 0,
+  stream: null, track: null, torch: false, ring: false, zoom: true,
+  live: { running: false, cap: null, geom: null, view: null, lastTime: -1, ok: false },
+  rv: { which: 'primary', view: 'both', drag: null, sel: null, T: null, pending: false },
+  clinical: { phenylephrine: '', bells: '', jawwink: false, fatigue: false, notes: '' },
+};
+const sampler = new Sampler();
+const saveSettings = () => store.set('ptosis.settings', S.settings);
+
+function show(id) {
+  document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === id));
+  window.scrollTo(0, 0);
+}
+
+// ---------------- face landmarker ----------------
+async function ensureLandmarker() {
+  if (S.lm) return S.lm;
+  if (!S.lmLoading) {
+    S.lmLoading = (async () => {
+      const { FaceLandmarker, FilesetResolver } = await import(`${MP_BASE}/vision_bundle.mjs`);
+      const fileset = await FilesetResolver.forVisionTasks(`${MP_BASE}/wasm`);
+      const opts = d => ({
+        baseOptions: { modelAssetPath: MODEL_URL, delegate: d },
+        runningMode: 'VIDEO', numFaces: 1,
+        minFaceDetectionConfidence: 0.5, minTrackingConfidence: 0.5,
+      });
+      let lm;
+      try { lm = await FaceLandmarker.createFromOptions(fileset, opts('GPU')); }
+      catch { lm = await FaceLandmarker.createFromOptions(fileset, opts('CPU')); }
+      S.lm = lm; S.lmMode = 'VIDEO';
+      return lm;
+    })();
+    S.lmLoading.catch(() => { S.lmLoading = null; });
+  }
+  return S.lmLoading;
+}
+async function setMode(mode) {
+  await ensureLandmarker();
+  if (S.lmMode !== mode) { await S.lm.setOptions({ runningMode: mode }); S.lmMode = mode; }
+}
+const nextTs = () => (S.lastTs = Math.max(performance.now(), S.lastTs + 1));
+
+// ---------------- camera ----------------
+async function startCamera() {
+  stopCamera();
+  const facing = S.settings.facing;
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: { facingMode: { ideal: facing }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+  });
+  S.stream = stream;
+  S.track = stream.getVideoTracks()[0];
+  el.video.srcObject = stream;
+  await el.video.play();
+  let caps = {};
+  try { caps = S.track.getCapabilities ? S.track.getCapabilities() : {}; } catch { /* unsupported */ }
+  const torchOk = !!caps.torch;
+  $('btnTorch').disabled = !torchOk;
+  $('btnTorch').title = torchOk ? '' : 'Torch not available on this camera/browser — use Ring light or a pen-torch beside the lens';
+  S.torch = false;
+  if (torchOk && facing === 'environment') await setTorch(true);
+  setRing(facing === 'user' && !torchOk);
+  updateToolButtons();
+}
+function stopCamera() {
+  if (S.stream) S.stream.getTracks().forEach(t => t.stop());
+  S.stream = null; S.track = null;
+}
+async function setTorch(on) {
+  if (!S.track) return;
+  try { await S.track.applyConstraints({ advanced: [{ torch: on }] }); S.torch = on; }
+  catch { S.torch = false; }
+  updateToolButtons();
+}
+function setRing(on) { S.ring = on; document.body.classList.toggle('ringlight', on); updateToolButtons(); }
+function updateToolButtons() {
+  $('btnTorch').setAttribute('aria-pressed', S.torch);
+  $('btnRing').setAttribute('aria-pressed', S.ring);
+  $('btnZoom').setAttribute('aria-pressed', S.zoom);
+}
+
+// ---------------- view transforms & drawing ----------------
+function resizeCanvas(c) {
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  const w = Math.round(c.clientWidth * dpr), h = Math.round(c.clientHeight * dpr);
+  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+  return dpr;
+}
+function bbox(pts, padX, padY = padX) {
+  const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const px = (x1 - x0) * padX, py = (y1 - y0) * padY;
+  return { x: x0 - px, y: y0 - py, w: x1 - x0 + 2 * px, h: y1 - y0 + 2 * py };
+}
+function makeT(box, cw, ch, mirror) {
+  let { x, y, w, h } = box;
+  const a = cw / ch;
+  if (w / h < a) { const nw = h * a; x -= (nw - w) / 2; w = nw; } else { const nh = w / a; y -= (nh - h) / 2; h = nh; }
+  const k = cw / w;
+  return {
+    sx: x, sy: y, sw: w, sh: h, k, cw, ch, mirror,
+    toS(p) { const X = (p.x - x) * k; return { x: mirror ? cw - X : X, y: (p.y - y) * k }; },
+    toI(q) { const X = mirror ? cw - q.x : q.x; return { x: X / k + x, y: q.y / k + y }; },
+  };
+}
+function drawImageView(ctx, src, W, H, T) {
+  const ix0 = Math.max(0, T.sx), iy0 = Math.max(0, T.sy);
+  const ix1 = Math.min(W, T.sx + T.sw), iy1 = Math.min(H, T.sy + T.sh);
+  if (ix1 <= ix0 || iy1 <= iy0) return;
+  ctx.save();
+  if (T.mirror) { ctx.translate(T.cw, 0); ctx.scale(-1, 1); }
+  ctx.drawImage(src, ix0, iy0, ix1 - ix0, iy1 - iy0, (ix0 - T.sx) * T.k, (iy0 - T.sy) * T.k, (ix1 - ix0) * T.k, (iy1 - iy0) * T.k);
+  ctx.restore();
+}
+function capPoints(cap, eyes = EYES) {
+  const pts = [];
+  for (const s of eyes) {
+    pts.push(...Object.values(cap.eyes[s].h));
+    if (cap.eyes[s].irisC) {
+      const c = cap.eyes[s].irisC, r = cap.eyes[s].irisRpx;
+      pts.push({ x: c.x - r, y: c.y - r }, { x: c.x + r, y: c.y + r });
+    }
+  }
+  return pts;
+}
+
+function line(ctx, a, b, color, w, dash) {
+  ctx.save();
+  ctx.strokeStyle = color; ctx.lineWidth = w; if (dash) ctx.setLineDash(dash);
+  ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+  ctx.restore();
+}
+function label(ctx, text, p, color, u, align) {
+  ctx.save();
+  ctx.font = `600 ${Math.round(12 * u)}px system-ui, sans-serif`;
+  ctx.textAlign = align; ctx.textBaseline = 'middle';
+  const w = ctx.measureText(text).width, h = 16 * u, pad = 4 * u;
+  const x0 = align === 'left' ? p.x : align === 'right' ? p.x - w : p.x - w / 2;
+  ctx.fillStyle = 'rgba(10,14,20,.72)';
+  ctx.fillRect(x0 - pad, p.y - h / 2, w + 2 * pad, h);
+  ctx.fillStyle = color; ctx.fillText(text, p.x, p.y);
+  ctx.restore();
+}
+const f1 = v => (v == null || Number.isNaN(v) ? '—' : (Math.abs(v) < 0.05 ? 0 : v).toFixed(1));
+
+// Overlay for a primary-gaze capture (live or review).
+function drawPrimaryOverlay(ctx, T, cap, m, u) {
+  const F = m.F;
+  for (const s of EYES) {
+    const E = cap.eyes[s], h = E.h, me = m.eyes[s];
+    const R = toUV(F, h.reflex), irisR = E.irisRpx;
+    const at = v => T.toS(fromUV(F, R.u, v));
+    const sR = T.toS(h.reflex);
+    const latSide = Math.sign(toUV(F, h.lat).u - R.u) || 1;
+    const side = v => T.toS(fromUV(F, R.u + latSide * irisR * 1.25, v));
+    const align = side(R.v).x > sR.x ? 'left' : 'right';
+    const tick = (v, color, half = irisR, w = 2) => line(ctx, T.toS(fromUV(F, R.u - half, v)), T.toS(fromUV(F, R.u + half, v)), color, w * u);
+
+    if (E.irisC) {
+      ctx.save(); ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = u;
+      const c = T.toS(E.irisC); ctx.beginPath(); ctx.arc(c.x, c.y, irisR * T.k, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+    }
+    // canthal span (PFW)
+    line(ctx, T.toS(h.med), T.toS(h.lat), 'rgba(61,220,132,.7)', 1.5 * u, [4 * u, 4 * u]);
+    // reflex horizontal reference
+    tick(R.v, 'rgba(255,225,77,.8)', irisR * 1.3, 1);
+    const U = toUV(F, h.upper).v, L = toUV(F, h.lower).v, C = toUV(F, h.crease).v, B = toUV(F, h.brow).v;
+    line(ctx, at(R.v), at(U), COLORS.upper, 2.5 * u);
+    line(ctx, at(R.v), at(L), COLORS.lower, 2.5 * u);
+    tick(U, COLORS.upper, irisR * 0.6);
+    tick(L, COLORS.lower, irisR * 0.6);
+    line(ctx, at(U), at(C), 'rgba(255,92,225,.7)', 1.5 * u, [3 * u, 3 * u]);
+    tick(C, COLORS.crease, irisR * 0.8);
+    tick(B, COLORS.brow, irisR * 0.8);
+    // reflex dot
+    ctx.save(); ctx.fillStyle = E.flags.reflex ? COLORS.reflex : 'rgba(255,225,77,.4)';
+    ctx.beginPath(); ctx.arc(sR.x, sR.y, 3 * u, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+
+    const labels = [
+      [`Brow ${f1(me.brow)}`, side(B), COLORS.brow],
+      [`MCD ${f1(me.mcd)}`, side((U + C) / 2), COLORS.crease],
+      [`MRD1 ${f1(me.mrd1)}`, side((R.v + U) / 2), COLORS.upper],
+      [`MRD2 ${f1(me.mrd2)}`, side((R.v + L) / 2), COLORS.lower],
+    ];
+    // keep the stack from overlapping when the eye is small on screen
+    for (let i = 1; i < labels.length; i++) {
+      const prev = labels[i - 1][1], cur = labels[i][1];
+      if (cur.y < prev.y + 18 * u) labels[i][1] = { x: cur.x, y: prev.y + 18 * u };
+    }
+    for (const [t, p, col] of labels) label(ctx, t, p, col, u, align);
+    const sl = at(L);
+    label(ctx, s, { x: sl.x, y: sl.y + 22 * u }, '#fff', u, 'center');
+  }
+}
+
+function drawGazeOverlay(ctx, T, cap, m, u) {
+  const F = m.F;
+  for (const s of EYES) {
+    const h = cap.eyes[s].h;
+    const M = toUV(F, h.med), L = toUV(F, h.lat), Up = toUV(F, h.upper);
+    const t = (Up.u - M.u) / ((L.u - M.u) || 1);
+    const foot = fromUV(F, Up.u, M.v + t * (L.v - M.v));
+    line(ctx, T.toS(h.med), T.toS(h.lat), COLORS.med, 2 * u, [5 * u, 4 * u]);
+    line(ctx, T.toS(foot), T.toS(h.upper), COLORS.upper, 2.5 * u);
+    const sU = T.toS(h.upper);
+    label(ctx, `${s} lid ${f1(m.eyes[s].lidHeight)} mm`, { x: sU.x, y: sU.y - 18 * u }, COLORS.upper, u, 'center');
+  }
+}
+
+function drawRuler(ctx, T, cap, u, mm) {
+  if (!cap.ruler) return;
+  const a = T.toS(cap.ruler.a), b = T.toS(cap.ruler.b);
+  line(ctx, a, b, COLORS.ruler, 2.5 * u);
+  label(ctx, `${mm} mm`, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 - 16 * u }, COLORS.ruler, u, 'center');
+}
+
+function drawHandles(ctx, T, cap, u, selected) {
+  for (const H of handleList(cap)) {
+    const p = T.toS(H.get());
+    const color = COLORS[H.key] || '#fff';
+    const r = 10 * u;
+    ctx.save();
+    ctx.fillStyle = color + '40'; ctx.strokeStyle = color; ctx.lineWidth = 2 * u;
+    ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    if (selected && selected.eye === H.eye && selected.key === H.key) {
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2 * u; ctx.beginPath(); ctx.arc(p.x, p.y, r + 4 * u, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.fillStyle = '#fff'; ctx.font = `700 ${Math.round(10 * u)}px system-ui, sans-serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(LETTER[H.key], p.x, p.y + 0.5);
+    ctx.restore();
+  }
+}
+
+function measureCap(cap) {
+  if (!cap) return null;
+  if (cap.kind === 'primary') return measurePrimary(cap, S.settings);
+  const icd = S.caps.primary ? measurePrimary(S.caps.primary, S.settings).icd : null;
+  return measureGaze(cap, S.settings, icd);
+}
+function drawOverlay(ctx, T, cap, m, u) {
+  if (cap.kind === 'primary') { drawPrimaryOverlay(ctx, T, cap, m, u); if (S.settings.calib === 'ruler') drawRuler(ctx, T, cap, u, S.settings.rulerMm); }
+  else drawGazeOverlay(ctx, T, cap, m, u);
+}
+
+// ---------------- live ----------------
+function lerpPt(a, b, t) { return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }; }
+function smoothCap(prev, cur, t) {
+  if (!prev || prev.kind !== cur.kind) return cur;
+  for (const s of EYES) {
+    for (const k of Object.keys(cur.eyes[s].h)) cur.eyes[s].h[k] = lerpPt(prev.eyes[s].h[k], cur.eyes[s].h[k], t);
+    cur.eyes[s].irisC = lerpPt(prev.eyes[s].irisC, cur.eyes[s].irisC, t);
+    cur.eyes[s].irisRpx += (prev.eyes[s].irisRpx - cur.eyes[s].irisRpx) * (1 - t);
+  }
+  cur.irisDiamPx += (prev.irisDiamPx - cur.irisDiamPx) * (1 - t);
+  return cur;
+}
+function buildCap(g, kind, smp) {
+  const cap = kind === 'primary' ? autoPrimary(g, smp, { hvid: S.settings.hvid }) : autoGaze(g, kind);
+  for (const s of EYES) cap.eyes[s].irisC = { ...g[s].iris.c };
+  return cap;
+}
+
+function liveLoop() {
+  if (!S.live.running) return;
+  requestAnimationFrame(liveLoop);
+  const v = el.video;
+  if (v.readyState < 2 || !S.lm || S.lmMode !== 'VIDEO' || !v.videoWidth) return;
+  const W = v.videoWidth, H = v.videoHeight;
+  if (v.currentTime !== S.live.lastTime) {
+    S.live.lastTime = v.currentTime;
+    let res;
+    try { res = S.lm.detectForVideo(v, nextTs()); } catch (e) { console.warn(e); return; }
+    if (res.faceLandmarks && res.faceLandmarks.length) {
+      const g = extractGeometry(res.faceLandmarks[0], W, H);
+      sampler.setSource(v, W, H);
+      S.live.cap = smoothCap(S.live.cap, buildCap(g, S.stage, sampler), 0.45);
+      S.live.geom = g;
+    } else { S.live.cap = null; S.live.geom = null; }
+    updateLivePanel();
+  }
+  drawLive(W, H);
+}
+
+function drawLive(W, H) {
+  const c = el.liveCanvas, u = resizeCanvas(c), ctx = c.getContext('2d');
+  const cap = S.live.cap;
+  let box = { x: 0, y: 0, w: W, h: H };
+  if (cap && S.zoom) box = bbox(capPoints(cap), 0.3, 0.45);
+  const prev = S.live.view;
+  if (prev && S.zoom && cap) box = { x: prev.x + (box.x - prev.x) * 0.15, y: prev.y + (box.y - prev.y) * 0.15, w: prev.w + (box.w - prev.w) * 0.15, h: prev.h + (box.h - prev.h) * 0.15 };
+  S.live.view = box;
+  const T = makeT(box, c.width, c.height, S.settings.facing === 'user');
+  ctx.fillStyle = S.ring ? '#fff' : '#000'; ctx.fillRect(0, 0, c.width, c.height);
+  drawImageView(ctx, el.video, W, H, T);
+  if (cap) drawOverlay(ctx, T, cap, measureCap(cap), u);
+}
+
+function chip(text, cls) { return `<span class="chip ${cls}">${text}</span>`; }
+function updateLivePanel() {
+  const cap = S.live.cap, g = S.live.geom;
+  const chips = [];
+  let ok = false;
+  if (!cap) chips.push(chip('No face', 'bad'));
+  else {
+    const d = cap.irisDiamPx;
+    chips.push(d >= 40 ? chip('Distance ✓', 'ok') : d >= 25 ? chip('Move closer', 'warn') : chip('Too far', 'bad'));
+    const F = makeFrame(cap.eyes.OD.irisC, cap.eyes.OS.irisC);
+    const roll = Math.abs(F.rollDeg);
+    chips.push(roll < 3 ? chip('Level ✓', 'ok') : chip(`Head tilt ${roll.toFixed(0)}°`, roll < 6 ? 'warn' : 'bad'));
+    const ipd = dist(cap.eyes.OD.irisC, cap.eyes.OS.irisC);
+    const yaw = (toUV(F, g.nose).u - toUV(F, mid(cap.eyes.OD.irisC, cap.eyes.OS.irisC)).u) / ipd;
+    chips.push(Math.abs(yaw) < 0.05 ? chip('Facing ✓', 'ok') : chip('Turn face to camera', Math.abs(yaw) < 0.1 ? 'warn' : 'bad'));
+    ok = d >= 25 && roll < 6 && Math.abs(yaw) < 0.1;
+    if (S.stage === 'primary') {
+      const n = EYES.filter(s => cap.eyes[s].flags.reflex).length;
+      chips.push(n === 2 ? chip('Reflex ✓', 'ok') : chip(n ? 'Reflex: 1 eye' : 'No reflex — light on?', n ? 'warn' : 'bad'));
+    }
+  }
+  el.checks.innerHTML = chips.join('');
+  $('btnCapture').disabled = !cap;
+  $('btnCapture').style.borderColor = ok ? 'var(--ok)' : 'var(--accent)';
+
+  const m = cap ? measureCap(cap) : null;
+  const val = (s, k) => (m ? f1(m.eyes[s][k]) : '—');
+  let rows;
+  if (S.stage === 'primary') {
+    rows = [['MRD1', 'mrd1'], ['MRD2', 'mrd2'], ['PFH', 'pfh'], ['MCD', 'mcd']].map(([n, k]) => `<tr><td>${n}</td><td>${val('OD', k)}</td><td>${val('OS', k)}</td></tr>`).join('');
+  } else {
+    rows = `<tr><td>Lid height</td><td>${val('OD', 'lidHeight')}</td><td>${val('OS', 'lidHeight')}</td></tr>`;
+  }
+  el.liveTable.innerHTML = `<thead><tr><th>mm</th><th>OD (R)</th><th>OS (L)</th></tr></thead><tbody>${rows}</tbody>`;
+}
+
+async function goLive(stage) {
+  if (stage) setStage(stage);
+  show('live');
+  el.loading.hidden = false;
+  el.loading.textContent = 'Starting camera…';
+  try {
+    if (!window.isSecureContext) throw new Error('Camera needs HTTPS (or localhost).');
+    if (!S.stream) await startCamera();
+    el.loading.textContent = 'Loading face model…';
+    await setMode('VIDEO');
+    el.loading.hidden = true;
+    if (!S.live.running) { S.live.running = true; S.live.cap = null; S.live.view = null; requestAnimationFrame(liveLoop); }
+  } catch (e) {
+    el.loading.textContent = `⚠ ${e.message || e}`;
+  }
+}
+function stopLive() { S.live.running = false; stopCamera(); setRing(false); }
+
+function setStage(stage) {
+  S.stage = stage;
+  S.live.cap = null;
+  document.querySelectorAll('#stageSeg button').forEach(b => {
+    b.classList.toggle('on', b.dataset.stage === stage);
+    b.classList.toggle('has', !!S.caps[b.dataset.stage]);
+  });
+  el.instruction.textContent = STAGE_TEXT[stage];
+}
+
+// ---------------- capture ----------------
+async function captureFromSource(src, W, H, kind, isVideo) {
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  c.getContext('2d').drawImage(src, 0, 0, W, H);
+  let res;
+  if (isVideo) { await setMode('VIDEO'); res = S.lm.detectForVideo(c, nextTs()); }
+  else { await setMode('IMAGE'); res = S.lm.detect(c); }
+  if (!res.faceLandmarks || !res.faceLandmarks.length) throw new Error('No face found in the image.');
+  const g = extractGeometry(res.faceLandmarks[0], W, H);
+  sampler.setSource(c, W, H);
+  const cap = buildCap(g, kind, sampler);
+  cap.canvas = c; cap.W = W; cap.H = H; cap.time = new Date().toISOString();
+  if (kind === 'primary') initRuler(cap);
+  return cap;
+}
+
+function initRuler(cap) {
+  const m = measurePrimary(cap, { ...S.settings, calib: 'hvid' });
+  const F = m.F, b1 = toUV(F, cap.eyes.OD.h.brow), b2 = toUV(F, cap.eyes.OS.h.brow);
+  const cu = (b1.u + b2.u) / 2, cv = Math.min(b1.v, b2.v) - 12 / m.mmpp;
+  const half = S.settings.rulerMm / 2 / m.mmpp;
+  cap.ruler = { a: fromUV(F, cu - half, cv), b: fromUV(F, cu + half, cv) };
+}
+
+async function captureLive() {
+  const v = el.video;
+  if (!v.videoWidth) return;
+  const flash = document.createElement('div');
+  flash.style.cssText = 'position:fixed;inset:0;background:#fff;opacity:.6;pointer-events:none;transition:opacity .25s';
+  document.body.appendChild(flash);
+  requestAnimationFrame(() => { flash.style.opacity = '0'; setTimeout(() => flash.remove(), 300); });
+  try {
+    const cap = await captureFromSource(v, v.videoWidth, v.videoHeight, S.stage, true);
+    S.caps[S.stage] = cap;
+    S.rv.which = S.stage;
+    S.live.running = false;
+    stopCamera(); setRing(false);
+    openReview();
+  } catch (e) {
+    el.instruction.textContent = `⚠ ${e.message}`;
+  }
+}
+
+async function loadPhoto(file, kind, msgEl) {
+  if (!file) return;
+  msgEl.textContent = 'Analysing photo…';
+  try {
+    await ensureLandmarker();
+    const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }).catch(() => createImageBitmap(file));
+    const scale = Math.min(1, 2400 / Math.max(bmp.width, bmp.height));
+    const W = Math.round(bmp.width * scale), H = Math.round(bmp.height * scale);
+    S.caps[kind] = await captureFromSource(bmp, W, H, kind, false);
+    msgEl.textContent = '';
+    S.rv.which = kind;
+    openReview();
+  } catch (e) {
+    msgEl.textContent = `⚠ ${e.message || e}`;
+  }
+}
+
+// ---------------- review / editor ----------------
+function handleList(cap) {
+  const out = [];
+  for (const s of EYES) {
+    for (const key of Object.keys(cap.eyes[s].h)) {
+      out.push({ eye: s, key, get: () => cap.eyes[s].h[key], set: p => { cap.eyes[s].h[key] = p; } });
+    }
+  }
+  if (cap.kind === 'primary' && S.settings.calib === 'ruler' && cap.ruler) {
+    for (const key of ['a', 'b']) out.push({ eye: 'ruler', key, get: () => cap.ruler[key], set: p => { cap.ruler[key] = p; } });
+  }
+  return out;
+}
+
+function reviewT() {
+  const cap = S.caps[S.rv.which], c = el.editCanvas;
+  let box;
+  if (S.rv.view === 'full') box = { x: 0, y: 0, w: cap.W, h: cap.H };
+  else if (S.rv.view === 'both') {
+    const pts = capPoints(cap);
+    if (cap.kind === 'primary' && S.settings.calib === 'ruler' && cap.ruler) pts.push(cap.ruler.a, cap.ruler.b);
+    box = bbox(pts, 0.22, 0.15);
+  } else box = bbox(capPoints(cap, [S.rv.view]), 0.45, 0.2);
+  return makeT(box, c.width, c.height, false);
+}
+
+// Size the editor to the region being shown so a phone screen isn't mostly forehead.
+function fitEditorHeight(cap) {
+  const wrap = $('editWrap'), w = wrap.clientWidth;
+  let aspect;
+  if (S.rv.view === 'full') aspect = cap.H / cap.W;
+  else {
+    const pts = capPoints(cap, S.rv.view === 'both' ? EYES : [S.rv.view]);
+    const b = S.rv.view === 'both' ? bbox(pts, 0.22, 0.15) : bbox(pts, 0.45, 0.2);
+    aspect = b.h / b.w;
+  }
+  const h = Math.max(260, Math.min(window.innerHeight * 0.62, w * aspect));
+  wrap.style.height = `${Math.round(h)}px`;
+}
+
+function drawEditor() {
+  S.rv.pending = false;
+  const cap = S.caps[S.rv.which], c = el.editCanvas;
+  $('editEmpty').hidden = !!cap;
+  if (!cap) { $('nudge').hidden = true; return; }
+  if (!S.rv.drag) fitEditorHeight(cap);
+  const u = resizeCanvas(c), ctx = c.getContext('2d');
+  if (!S.rv.drag) S.rv.T = reviewT();
+  const T = S.rv.T, m = measureCap(cap);
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, c.width, c.height);
+  drawImageView(ctx, cap.canvas, cap.W, cap.H, T);
+  drawOverlay(ctx, T, cap, m, u);
+  drawHandles(ctx, T, cap, u, S.rv.sel);
+  if (S.rv.drag) drawLoupe(ctx, cap, m, u);
+  const sel = S.rv.sel;
+  $('nudge').hidden = !sel;
+  if (sel) $('nudgeLabel').textContent = `${sel.eye === 'ruler' ? 'Ruler' : sel.eye} ${HANDLE_NAME[sel.key]}`;
+}
+
+function drawLoupe(ctx, cap, m, u) {
+  const H = S.rv.drag.h, p = H.get(), T = S.rv.T;
+  const R = 70 * u, zoom = 3;
+  const sp = T.toS(p);
+  const cx = sp.x < T.cw / 2 ? T.cw - R - 10 * u : R + 10 * u, cy = R + 10 * u;
+  const L = makeT({ x: p.x - R / (T.k * zoom), y: p.y - R / (T.k * zoom), w: 2 * R / (T.k * zoom), h: 2 * R / (T.k * zoom) }, 2 * R, 2 * R, false);
+  ctx.save();
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.clip();
+  ctx.translate(cx - R, cy - R);
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, 2 * R, 2 * R);
+  drawImageView(ctx, cap.canvas, cap.W, cap.H, L);
+  drawOverlay(ctx, L, cap, m, u * 0.8);
+  line(ctx, { x: R - 12 * u, y: R }, { x: R + 12 * u, y: R }, '#fff', u);
+  line(ctx, { x: R, y: R - 12 * u }, { x: R, y: R + 12 * u }, '#fff', u);
+  ctx.restore();
+  ctx.save(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2 * u; ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+}
+
+function scheduleDraw() {
+  if (S.rv.pending) return;
+  S.rv.pending = true;
+  requestAnimationFrame(() => { drawEditor(); renderResults(); });
+}
+
+function canvasPt(e) {
+  const r = el.editCanvas.getBoundingClientRect(), dpr = el.editCanvas.width / r.width;
+  return { x: (e.clientX - r.left) * dpr, y: (e.clientY - r.top) * dpr };
+}
+function setupEditor() {
+  const c = el.editCanvas;
+  c.addEventListener('pointerdown', e => {
+    const cap = S.caps[S.rv.which];
+    if (!cap || !S.rv.T) return;
+    const q = canvasPt(e), u = c.width / c.getBoundingClientRect().width;
+    let best = null, bd = 28 * u;
+    for (const H of handleList(cap)) {
+      const d = dist(S.rv.T.toS(H.get()), q);
+      if (d < bd) { bd = d; best = H; }
+    }
+    if (best) {
+      const s = S.rv.T.toS(best.get());
+      S.rv.drag = { h: best, off: { x: s.x - q.x, y: s.y - q.y } };
+      S.rv.sel = { eye: best.eye, key: best.key };
+      c.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    } else S.rv.sel = null;
+    scheduleDraw();
+  });
+  c.addEventListener('pointermove', e => {
+    if (!S.rv.drag) return;
+    const q = canvasPt(e), o = S.rv.drag.off;
+    S.rv.drag.h.set(S.rv.T.toI({ x: q.x + o.x, y: q.y + o.y }));
+    scheduleDraw();
+  });
+  const end = () => { if (S.rv.drag) { S.rv.drag = null; scheduleDraw(); } };
+  c.addEventListener('pointerup', end);
+  c.addEventListener('pointercancel', end);
+  $('nudge').addEventListener('click', e => {
+    const d = e.target.dataset.d;
+    const cap = S.caps[S.rv.which];
+    if (!d || !S.rv.sel || !cap) return;
+    const [dx, dy] = d.split(',').map(Number);
+    const H = handleList(cap).find(h => h.eye === S.rv.sel.eye && h.key === S.rv.sel.key);
+    if (!H) return;
+    // one step ≈ 0.1 mm, or 1 px at most
+    const mmpp = cap.kind === 'primary' ? measurePrimary(cap, S.settings).mmpp : measureCap(cap).mmpp;
+    const step = Math.min(1, 0.1 / mmpp);
+    const p = H.get();
+    H.set({ x: p.x + dx * step, y: p.y + dy * step });
+    scheduleDraw();
+  });
+  new ResizeObserver(() => { if ($('review').classList.contains('active')) scheduleDraw(); }).observe($('editWrap'));
+}
+
+function openReview() {
+  show('review');
+  syncReviewInputs();
+  updateSegs();
+  scheduleDraw();
+}
+function updateSegs() {
+  document.querySelectorAll('#capSeg button').forEach(b => {
+    b.classList.toggle('on', b.dataset.cap === S.rv.which);
+    b.classList.toggle('has', !!S.caps[b.dataset.cap]);
+  });
+  document.querySelectorAll('#viewSeg button').forEach(b => b.classList.toggle('on', b.dataset.v === S.rv.view));
+}
+
+// ---------------- results & report ----------------
+function computeAll() {
+  const mp = S.caps.primary ? measurePrimary(S.caps.primary, S.settings) : null;
+  const md = S.caps.down ? measureCap(S.caps.down) : null;
+  const mu = S.caps.up ? measureCap(S.caps.up) : null;
+  const lf = md && mu ? { OD: mu.eyes.OD.lidHeight - md.eyes.OD.lidHeight, OS: mu.eyes.OS.lidHeight - md.eyes.OS.lidHeight } : null;
+  return { mp, md, mu, lf };
+}
+
+function resultRows(R) {
+  const { mp, md, mu, lf } = R, n = S.settings.normalMrd1;
+  const e = (s, k) => (mp ? mp.eyes[s][k] : null);
+  const rows = [
+    ['MRD1', 'mrd1', 'Reflex → upper lid margin'],
+    ['MRD2', 'mrd2', 'Reflex → lower lid margin'],
+    ['Palpebral fissure height', 'pfh', 'MRD1 + MRD2'],
+    ['Palpebral fissure width', 'pfw', 'Medial → lateral canthus'],
+    ['Lid crease height (MCD)', 'mcd', 'Lid margin → crease'],
+    ['Reflex → brow', 'brow', 'To lower brow margin'],
+    ['Corneal coverage (upper lid)', 'coverage', 'Iris radius − MRD1'],
+    ['Inferior scleral show', 'scleralShowInf', 'MRD2 − iris radius'],
+  ].map(([name, k, sub]) => ({ name, sub, OD: e('OD', k), OS: e('OS', k), key: k }));
+  rows.push({ name: 'Lid height, down-gaze', sub: 'Above intercanthal line', OD: md && md.eyes.OD.lidHeight, OS: md && md.eyes.OS.lidHeight });
+  rows.push({ name: 'Lid height, up-gaze', sub: 'Above intercanthal line', OD: mu && mu.eyes.OD.lidHeight, OS: mu && mu.eyes.OS.lidHeight });
+  rows.push({ name: 'Levator function', sub: 'Up − down excursion', OD: lf && lf.OD, OS: lf && lf.OS, key: 'lf' });
+  const grade = s => (mp ? ptosisGrade(mp.eyes[s].mrd1, n) : null);
+  return { rows, grade };
+}
+
+function renderResults() {
+  const R = computeAll(), { mp, lf } = R;
+  const { rows, grade } = resultRows(R);
+  const cell = (r, s) => {
+    let v = f1(r[s]);
+    if (r.key === 'mrd1' && mp && !mp.eyes[s].reflexFound) v += '<small class="flag">reflex est.</small>';
+    if (r.key === 'mcd' && mp && !mp.eyes[s].creaseAuto) v += '<small class="flag">check crease</small>';
+    if (r.key === 'lf' && lf) v += `<small>${lfGrade(lf[s])}</small>`;
+    return `<td>${v}</td>`;
+  };
+  let html = '<thead><tr><th>mm</th><th>OD (R)</th><th>OS (L)</th></tr></thead><tbody>';
+  for (const r of rows) html += `<tr><td>${r.name}<small>${r.sub}</small></td>${cell(r, 'OD')}${cell(r, 'OS')}</tr>`;
+  const gc = s => { const g = grade(s); return g ? `<td class="sev${g.level}">${g.label}<small>${g.level ? `≈ ${g.amount.toFixed(1)} mm` : ''}</small></td>` : '<td>—</td>'; };
+  html += `<tr><td>Grade<small>vs normal MRD1 ${S.settings.normalMrd1} mm</small></td>${gc('OD')}${gc('OS')}</tr>`;
+  if (mp) html += `<tr><td>MRD1 asymmetry</td><td colspan="2">${Math.abs(mp.eyes.OD.mrd1 - mp.eyes.OS.mrd1).toFixed(1)} mm</td></tr>`;
+  el.results.innerHTML = html + '</tbody>';
+
+  el.calibInfo.textContent = mp
+    ? `Scale: ${mp.method} → ${(mp.mmpp * 1000).toFixed(1)} µm/px. IPD ${f1(mp.ipd)} mm, intercanthal ${f1(mp.icd)} mm.${lf ? ' Gaze captures scaled by intercanthal distance.' : ''}`
+    : 'Capture primary gaze for MRD measurements.';
+
+  const tips = suggestions(mp, lf, S.clinical, S.settings.normalMrd1);
+  if (!mp) tips.unshift('Capture primary gaze to grade ptosis.');
+  if (mp && !lf) tips.push('Levator function not yet measured — capture Down-gaze and Up-gaze.');
+  if (mp && EYES.some(s => !mp.eyes[s].reflexFound)) tips.push('Corneal reflex not detected in one eye — MRD1 estimated from iris centre. Verify, or re-capture with the light on.');
+  el.interp.innerHTML = tips.map(t => `<li>${t}</li>`).join('');
+}
+
+function reportText() {
+  const R = computeAll(), { mp, lf } = R;
+  const { rows, grade } = resultRows(R);
+  const p = { id: $('pId').value.trim(), age: $('pAge').value.trim(), sex: $('pSex').value };
+  const pad = (s, n) => String(s).padEnd(n);
+  const L = [];
+  L.push('PTOSIS EVALUATION');
+  L.push(`Patient: ${p.id || '—'}${p.age ? `, ${p.age} y` : ''}${p.sex ? `, ${p.sex}` : ''}`);
+  L.push(`Date: ${new Date().toLocaleString()}`);
+  if (mp) L.push(`Calibration: ${mp.method}`);
+  L.push('');
+  L.push(`${pad('(mm)', 30)}${pad('OD', 16)}OS`);
+  for (const r of rows) {
+    if (r.OD == null && r.OS == null) continue;
+    let a = f1(r.OD), b = f1(r.OS);
+    if (r.key === 'lf' && lf) { a += ` ${lfGrade(lf.OD)}`; b += ` ${lfGrade(lf.OS)}`; }
+    L.push(`${pad(r.name, 30)}${pad(a, 16)}${b}`);
+  }
+  if (mp) L.push(`${pad('Grade', 30)}${grade('OD').label} | ${grade('OS').label}`);
+  const c = S.clinical;
+  const tests = [];
+  if (c.phenylephrine) tests.push(`Phenylephrine test ${c.phenylephrine}`);
+  if (c.bells) tests.push(`Bell's ${c.bells}`);
+  if (c.jawwink) tests.push('Jaw-winking present');
+  if (c.fatigue) tests.push('Fatigability present');
+  if (tests.length) { L.push(''); L.push(tests.join('; ')); }
+  if (c.notes) L.push(`Notes: ${c.notes}`);
+  const tips = suggestions(mp, lf, c, S.settings.normalMrd1);
+  if (tips.length) { L.push(''); L.push('Interpretation:'); tips.forEach(t => L.push(`- ${t}`)); }
+  L.push('');
+  L.push('Photogrammetric estimate (Ptosis Evaluator); verify clinically.');
+  return L.join('\n');
+}
+
+async function annotatedImage() {
+  const cap = S.caps.primary || S.caps[S.rv.which];
+  if (!cap) return null;
+  const m = measureCap(cap);
+  const box = bbox(capPoints(cap), 0.22, 0.15);
+  const cw = 1600, ch = Math.round(cw * Math.max(0.45, box.h / box.w)), head = 120;
+  const c = document.createElement('canvas');
+  c.width = cw; c.height = ch + head;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#0f1620'; ctx.fillRect(0, 0, c.width, c.height);
+  ctx.save(); ctx.translate(0, head);
+  const T = makeT(box, cw, ch, false);
+  drawImageView(ctx, cap.canvas, cap.W, cap.H, T);
+  drawOverlay(ctx, T, cap, m, 2);
+  ctx.restore();
+  ctx.fillStyle = '#e8eef5'; ctx.font = '600 34px system-ui, sans-serif';
+  ctx.fillText(`Ptosis evaluation — ${$('pId').value.trim() || 'patient'} — ${new Date().toLocaleDateString()}`, 24, 48);
+  ctx.font = '26px system-ui, sans-serif'; ctx.fillStyle = '#93a4b8';
+  if (cap.kind === 'primary') {
+    const e = m.eyes;
+    ctx.fillText(`OD: MRD1 ${f1(e.OD.mrd1)}  MRD2 ${f1(e.OD.mrd2)}  PFH ${f1(e.OD.pfh)}  MCD ${f1(e.OD.mcd)}     OS: MRD1 ${f1(e.OS.mrd1)}  MRD2 ${f1(e.OS.mrd2)}  PFH ${f1(e.OS.pfh)}  MCD ${f1(e.OS.mcd)}`, 24, 92);
+  }
+  return new Promise(res => c.toBlob(res, 'image/jpeg', 0.92));
+}
+
+// ---------------- history ----------------
+function renderHistory() {
+  const list = store.get('ptosis.history', []);
+  $('histCount').textContent = list.length;
+  $('historyList').innerHTML = list.length ? list.map((h, i) => `
+    <div class="hist">
+      <div class="hist-head"><b>${escapeHtml(h.id || 'Unnamed')}</b><span class="hint">${new Date(h.t).toLocaleString()}</span>
+      <span><button data-copy="${i}">Copy</button> <button data-del="${i}">Delete</button></span></div>
+      <pre>${escapeHtml(h.text)}</pre>
+    </div>`).join('') : '<p class="hint">Nothing saved yet. Saved reports stay on this device only.</p>';
+}
+function escapeHtml(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+// ---------------- wiring ----------------
+function syncReviewInputs() {
+  $('calib').value = S.settings.calib;
+  $('hvid2').value = S.settings.hvid;
+  $('rulerMm').value = S.settings.rulerMm;
+  $('normalMrd1').value = S.settings.normalMrd1;
+}
+
+function msg(text) { $('reviewMsg').textContent = text; if (text) setTimeout(() => { if ($('reviewMsg').textContent === text) $('reviewMsg').textContent = ''; }, 3000); }
+
+function init() {
+  $('hvid').value = S.settings.hvid;
+  $('facing').value = S.settings.facing;
+  $('hvid').addEventListener('change', e => { S.settings.hvid = +e.target.value || 11.7; saveSettings(); });
+  $('facing').addEventListener('change', e => { S.settings.facing = e.target.value; saveSettings(); });
+  $('btnStart').addEventListener('click', () => goLive('primary'));
+  $('fileHome').addEventListener('change', e => { loadPhoto(e.target.files[0], 'primary', $('homeMsg')); e.target.value = ''; });
+  // Start loading the model early so the camera view is ready faster.
+  ensureLandmarker().catch(e => { $('homeMsg').textContent = `Could not load face model: ${e.message}`; });
+
+  $('btnBack').addEventListener('click', () => { stopLive(); show('home'); });
+  $('btnTorch').addEventListener('click', () => setTorch(!S.torch));
+  $('btnRing').addEventListener('click', () => setRing(!S.ring));
+  $('btnZoom').addEventListener('click', () => { S.zoom = !S.zoom; S.live.view = null; updateToolButtons(); });
+  $('btnFlip').addEventListener('click', async () => {
+    S.settings.facing = S.settings.facing === 'user' ? 'environment' : 'user';
+    $('facing').value = S.settings.facing; saveSettings();
+    S.live.cap = null;
+    try { await startCamera(); } catch (e) { el.instruction.textContent = `⚠ ${e.message}`; }
+  });
+  $('btnCapture').addEventListener('click', captureLive);
+  $('btnToReview').addEventListener('click', () => { stopLive(); S.rv.which = S.stage; openReview(); });
+  $('stageSeg').addEventListener('click', e => { if (e.target.dataset.stage) setStage(e.target.dataset.stage); });
+
+  $('btnReviewBack').addEventListener('click', () => goLive(S.rv.which));
+  $('capSeg').addEventListener('click', e => { if (e.target.dataset.cap) { S.rv.which = e.target.dataset.cap; S.rv.sel = null; updateSegs(); scheduleDraw(); } });
+  $('viewSeg').addEventListener('click', e => { if (e.target.dataset.v) { S.rv.view = e.target.dataset.v; updateSegs(); scheduleDraw(); } });
+  $('btnCaptureThis').addEventListener('click', () => goLive(S.rv.which));
+  $('btnRetake').addEventListener('click', () => goLive(S.rv.which));
+  $('fileReview').addEventListener('change', e => { loadPhoto(e.target.files[0], S.rv.which, $('reviewMsg')); e.target.value = ''; });
+
+  const num = (id, key, fallback) => $(id).addEventListener('input', e => {
+    const v = parseFloat(e.target.value);
+    S.settings[key] = Number.isFinite(v) && v > 0 ? v : fallback;
+    if (key === 'hvid') $('hvid').value = S.settings.hvid;
+    saveSettings(); scheduleDraw();
+  });
+  num('hvid2', 'hvid', 11.7); num('rulerMm', 'rulerMm', 10); num('normalMrd1', 'normalMrd1', 4.5);
+  $('calib').addEventListener('change', e => {
+    S.settings.calib = e.target.value; saveSettings();
+    if (S.caps.primary && !S.caps.primary.ruler) initRuler(S.caps.primary);
+    scheduleDraw();
+  });
+  const clin = (id, key, prop = 'value') => $(id).addEventListener('input', e => { S.clinical[key] = e.target[prop]; renderResults(); });
+  clin('phenyl', 'phenylephrine'); clin('bells', 'bells'); clin('jawwink', 'jawwink', 'checked'); clin('fatigue', 'fatigue', 'checked'); clin('notes', 'notes');
+
+  $('btnCopy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(reportText()); msg('Report copied.'); } catch { msg('Clipboard unavailable.'); }
+  });
+  $('btnShare').addEventListener('click', async () => {
+    const text = reportText();
+    try {
+      const blob = await annotatedImage();
+      const file = blob && new File([blob], 'ptosis.jpg', { type: 'image/jpeg' });
+      if (file && navigator.canShare && navigator.canShare({ files: [file] })) await navigator.share({ title: 'Ptosis evaluation', text, files: [file] });
+      else if (navigator.share) await navigator.share({ title: 'Ptosis evaluation', text });
+      else { await navigator.clipboard.writeText(text); msg('Sharing not supported — report copied instead.'); }
+    } catch (e) { if (e.name !== 'AbortError') msg(`Share failed: ${e.message}`); }
+  });
+  $('btnImage').addEventListener('click', async () => {
+    const blob = await annotatedImage();
+    if (!blob) { msg('Nothing captured yet.'); return; }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `ptosis_${($('pId').value.trim() || 'patient').replace(/\W+/g, '_')}_${new Date().toISOString().slice(0, 10)}.jpg`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  });
+  $('btnSave').addEventListener('click', () => {
+    if (!S.caps.primary) { msg('Capture primary gaze first.'); return; }
+    const list = store.get('ptosis.history', []);
+    list.unshift({ t: Date.now(), id: $('pId').value.trim(), text: reportText() });
+    store.set('ptosis.history', list.slice(0, 100));
+    renderHistory(); msg('Saved on this device.');
+  });
+  $('btnNew').addEventListener('click', () => {
+    S.caps = { primary: null, down: null, up: null };
+    S.clinical = { phenylephrine: '', bells: '', jawwink: false, fatigue: false, notes: '' };
+    ['pId', 'pAge', 'notes'].forEach(id => { $(id).value = ''; });
+    ['pSex', 'phenyl', 'bells'].forEach(id => { $(id).value = ''; });
+    ['jawwink', 'fatigue'].forEach(id => { $(id).checked = false; });
+    S.rv.which = 'primary'; S.rv.sel = null;
+    show('home');
+  });
+  $('historyList').addEventListener('click', async e => {
+    const list = store.get('ptosis.history', []);
+    if (e.target.dataset.del != null) { list.splice(+e.target.dataset.del, 1); store.set('ptosis.history', list); renderHistory(); }
+    if (e.target.dataset.copy != null) { try { await navigator.clipboard.writeText(list[+e.target.dataset.copy].text); e.target.textContent = 'Copied'; } catch { /* ignore */ } }
+  });
+
+  setupEditor();
+  setStage('primary');
+  updateToolButtons();
+  renderHistory();
+  document.addEventListener('visibilitychange', () => { if (document.hidden && S.live.running) stopLive(); else if (!document.hidden && $('live').classList.contains('active')) goLive(); });
+}
+
+init();
+
+// Exposed for automated testing.
+window.__ptosis = { S, loadPhoto, computeAll, reportText };

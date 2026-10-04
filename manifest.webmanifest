@@ -1,0 +1,10 @@
+{
+  "name": "Ptosis Evaluator",
+  "short_name": "Ptosis",
+  "start_url": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f1620",
+  "theme_color": "#0f1620",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}
