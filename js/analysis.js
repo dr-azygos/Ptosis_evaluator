@@ -28,15 +28,24 @@ export const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 export const mid = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
 
 // Orthonormal measurement frame: u runs from OD toward OS (horizontal),
-// v is perpendicular and points down. Vertical distances are taken along v
-// so a tilted head does not inflate MRD values.
-export function makeFrame(pOD, pOS) {
+// v is perpendicular and points toward the patient's chin. Vertical distances
+// are taken along v so a tilted head does not inflate MRD values.
+// `nose` anchors "down" to the face, so a rotated or upside-down image (phone
+// held sideways, photo with unapplied rotation) cannot flip the signs.
+export function makeFrame(pOD, pOS, nose) {
   const dx = pOS.x - pOD.x, dy = pOS.y - pOD.y;
   const len = Math.hypot(dx, dy) || 1;
   let u = { x: dx / len, y: dy / len };
   let v = { x: -u.y, y: u.x };
-  if (v.y < 0) v = { x: -v.x, y: -v.y }; // keep v pointing down the image
-  return { u, v, rollDeg: Math.atan2(dy, Math.abs(dx)) * 180 / Math.PI };
+  const flip = nose
+    ? dot({ x: nose.x - (pOD.x + pOS.x) / 2, y: nose.y - (pOD.y + pOS.y) / 2 }, v) < 0
+    : v.y < 0;
+  if (flip) v = { x: -v.x, y: -v.y };
+  // Head tilt relative to the nearest image axis, so a phone held sideways
+  // with an upright face still reads as level.
+  const a = Math.atan2(dy, dx) * 180 / Math.PI;
+  const rollDeg = a - 90 * Math.round(a / 90);
+  return { u, v, rollDeg };
 }
 export const toUV = (F, p) => ({ u: dot(p, F.u), v: dot(p, F.v) });
 export const fromUV = (F, u, v) => ({ x: F.u.x * u + F.v.x * v, y: F.u.y * u + F.v.y * v });
@@ -229,7 +238,7 @@ export function autoPrimary(g, sampler, opts = {}) {
     found[s] = !!det;
     reflex[s] = det ? { x: det.x, y: det.y } : { ...g[s].iris.c };
   }
-  const F = makeFrame(reflex.OD, reflex.OS);
+  const F = makeFrame(reflex.OD, reflex.OS, g.nose);
   const eyes = {};
   for (const s of EYES) {
     const e = g[s], R = toUV(F, reflex[s]);
@@ -249,16 +258,16 @@ export function autoPrimary(g, sampler, opts = {}) {
       irisRpx: e.iris.r,
     };
   }
-  return { kind: 'primary', irisDiamPx, eyes };
+  return { kind: 'primary', irisDiamPx, eyes, nose: { ...g.nose } };
 }
 
 export function autoGaze(g, kind) {
-  const F = makeFrame(g.OD.inner, g.OS.inner);
+  const F = makeFrame(g.OD.inner, g.OS.inner, g.nose);
   const eyes = {};
   for (const s of EYES) {
     eyes[s] = { h: { upper: polyApex(F, g[s].upper), med: g[s].inner, lat: g[s].outer }, flags: {}, irisRpx: g[s].iris.r };
   }
-  return { kind, irisDiamPx: g.OD.iris.r + g.OS.iris.r, eyes };
+  return { kind, irisDiamPx: g.OD.iris.r + g.OS.iris.r, eyes, nose: { ...g.nose } };
 }
 
 // ---------- measurements ----------
@@ -272,7 +281,7 @@ export function primaryScale(cap, settings) {
 
 export function measurePrimary(cap, settings) {
   const { mmpp, method } = primaryScale(cap, settings);
-  const F = makeFrame(cap.eyes.OD.h.reflex, cap.eyes.OS.h.reflex);
+  const F = makeFrame(cap.eyes.OD.h.reflex, cap.eyes.OS.h.reflex, cap.nose);
   const out = { mmpp, method, F, eyes: {} };
   for (const s of EYES) {
     const { h, flags, irisRpx } = cap.eyes[s];
@@ -299,7 +308,7 @@ export function measurePrimary(cap, settings) {
 export function measureGaze(cap, settings, icdMm) {
   const icdPx = dist(cap.eyes.OD.h.med, cap.eyes.OS.h.med);
   const mmpp = icdMm ? icdMm / icdPx : settings.hvid / cap.irisDiamPx;
-  const F = makeFrame(cap.eyes.OD.h.med, cap.eyes.OS.h.med);
+  const F = makeFrame(cap.eyes.OD.h.med, cap.eyes.OS.h.med, cap.nose);
   const out = { mmpp, F, eyes: {} };
   for (const s of EYES) {
     const { h } = cap.eyes[s];
@@ -350,6 +359,8 @@ export function suggestions(m, lf, clinical, normal) {
     if (e.mrd1 <= 2) parts.push('MRD1 ≤ 2 mm — likely visually significant; consider superior visual field testing');
     out.push(`${s}: ${g.label} (~${g.amount.toFixed(1)} mm). ${parts.join('; ')}.`);
   }
+  if (EYES.some(s => m.eyes[s].pfh <= 0 || m.eyes[s].brow <= 0))
+    out.unshift('⚠ Implausible values (negative fissure height or brow distance): markers are inverted or misplaced. Re-capture with the face upright, or correct the markers.');
   if (Math.abs(m.eyes.OD.mrd1 - m.eyes.OS.mrd1) >= 1.5)
     out.push('Asymmetry ≥ 1.5 mm — check for Hering\'s dependence (lift the ptotic lid and re-check the fellow eye).');
   if (clinical.jawwink) out.push('Jaw-winking noted — consider Marcus Gunn synkinesis before planning surgery.');

@@ -40,7 +40,7 @@ const S = {
   stage: 'primary',
   lm: null, lmMode: null, lmLoading: null, lastTs: 0,
   stream: null, track: null, torch: false, ring: false, zoom: true,
-  live: { running: false, cap: null, geom: null, view: null, lastTime: -1, ok: false },
+  live: { running: false, cap: null, geom: null, view: null, lastTime: -1, ok: false, rot: 0, miss: 0, src: null, rc: null },
   rv: { which: 'primary', view: 'both', drag: null, sel: null, T: null, pending: false },
   clinical: { phenylephrine: '', bells: '', jawwink: false, fatigue: false, notes: '' },
 };
@@ -300,22 +300,55 @@ function buildCap(g, kind, smp) {
   return cap;
 }
 
+// Draw `src` rotated clockwise by q quarter-turns into `out` (created if absent).
+function rotateInto(src, W, H, q, out) {
+  const c = out || document.createElement('canvas');
+  const sw = q % 2 === 1;
+  const w = sw ? H : W, h = sw ? W : H;
+  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+  const ctx = c.getContext('2d');
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  if (q === 1) { ctx.translate(w, 0); ctx.rotate(Math.PI / 2); }
+  else if (q === 2) { ctx.translate(w, h); ctx.rotate(Math.PI); }
+  else if (q === 3) { ctx.translate(0, h); ctx.rotate(-Math.PI / 2); }
+  ctx.drawImage(src, 0, 0, W, H);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  return c;
+}
+// Quarter-turns (clockwise) needed to make the detected face upright.
+function uprightTurns(g) {
+  const m = mid(g.OD.iris.c, g.OS.iris.c);
+  const deg = Math.atan2(g.nose.x - m.x, g.nose.y - m.y) * 180 / Math.PI; // 0 = face down is image down
+  return ((Math.round(deg / 90) % 4) + 4) % 4;
+}
+
 function liveLoop() {
   if (!S.live.running) return;
   requestAnimationFrame(liveLoop);
   const v = el.video;
   if (v.readyState < 2 || !S.lm || S.lmMode !== 'VIDEO' || !v.videoWidth) return;
-  const W = v.videoWidth, H = v.videoHeight;
+  const q = S.live.rot || 0;
+  const vw = v.videoWidth, vh = v.videoHeight;
+  const W = q % 2 ? vh : vw, H = q % 2 ? vw : vh;
   if (v.currentTime !== S.live.lastTime) {
     S.live.lastTime = v.currentTime;
+    const src = q ? (S.live.rc = rotateInto(v, vw, vh, q, S.live.rc)) : v;
+    S.live.src = src;
     let res;
-    try { res = S.lm.detectForVideo(v, nextTs()); } catch (e) { console.warn(e); return; }
+    try { res = S.lm.detectForVideo(src, nextTs()); } catch (e) { console.warn(e); return; }
     if (res.faceLandmarks && res.faceLandmarks.length) {
+      S.live.miss = 0;
       const g = extractGeometry(res.faceLandmarks[0], W, H);
-      sampler.setSource(v, W, H);
+      const turn = uprightTurns(g);
+      if (turn) { S.live.rot = (q + turn) % 4; S.live.cap = null; S.live.view = null; return; }
+      sampler.setSource(src, W, H);
       S.live.cap = smoothCap(S.live.cap, buildCap(g, S.stage, sampler), 0.45);
       S.live.geom = g;
-    } else { S.live.cap = null; S.live.geom = null; }
+    } else {
+      S.live.cap = null; S.live.geom = null;
+      // The model needs a roughly upright face; try the next orientation.
+      if (++S.live.miss > 12) { S.live.miss = 0; S.live.rot = (q + 1) % 4; S.live.view = null; }
+    }
     updateLivePanel();
   }
   drawLive(W, H);
@@ -324,6 +357,10 @@ function liveLoop() {
 function drawLive(W, H) {
   const c = el.liveCanvas, u = resizeCanvas(c), ctx = c.getContext('2d');
   const cap = S.live.cap;
+  // Without a face, show the unrotated feed so the preview doesn't spin while
+  // the orientation search runs.
+  const src = cap ? S.live.src || el.video : el.video;
+  if (!cap) { W = el.video.videoWidth; H = el.video.videoHeight; }
   let box = { x: 0, y: 0, w: W, h: H };
   if (cap && S.zoom) box = bbox(capPoints(cap), 0.3, 0.45);
   const prev = S.live.view;
@@ -331,7 +368,7 @@ function drawLive(W, H) {
   S.live.view = box;
   const T = makeT(box, c.width, c.height, S.settings.facing === 'user');
   ctx.fillStyle = S.ring ? '#fff' : '#000'; ctx.fillRect(0, 0, c.width, c.height);
-  drawImageView(ctx, el.video, W, H, T);
+  drawImageView(ctx, src, W, H, T);
   if (cap) drawOverlay(ctx, T, cap, measureCap(cap), u);
 }
 
@@ -344,7 +381,7 @@ function updateLivePanel() {
   else {
     const d = cap.irisDiamPx;
     chips.push(d >= 40 ? chip('Distance ✓', 'ok') : d >= 25 ? chip('Move closer', 'warn') : chip('Too far', 'bad'));
-    const F = makeFrame(cap.eyes.OD.irisC, cap.eyes.OS.irisC);
+    const F = makeFrame(cap.eyes.OD.irisC, cap.eyes.OS.irisC, cap.nose);
     const roll = Math.abs(F.rollDeg);
     chips.push(roll < 3 ? chip('Level ✓', 'ok') : chip(`Head tilt ${roll.toFixed(0)}°`, roll < 6 ? 'warn' : 'bad'));
     const ipd = dist(cap.eyes.OD.irisC, cap.eyes.OS.irisC);
@@ -382,7 +419,7 @@ async function goLive(stage) {
     el.loading.textContent = 'Loading face model…';
     await setMode('VIDEO');
     el.loading.hidden = true;
-    if (!S.live.running) { S.live.running = true; S.live.cap = null; S.live.view = null; requestAnimationFrame(liveLoop); }
+    if (!S.live.running) { S.live.running = true; S.live.cap = null; S.live.view = null; S.live.src = null; S.live.miss = 0; requestAnimationFrame(liveLoop); }
   } catch (e) {
     el.loading.textContent = `⚠ ${e.message || e}`;
   }
@@ -401,17 +438,27 @@ function setStage(stage) {
 
 // ---------------- capture ----------------
 async function captureFromSource(src, W, H, kind, isVideo) {
-  const c = document.createElement('canvas');
-  c.width = W; c.height = H;
-  c.getContext('2d').drawImage(src, 0, 0, W, H);
-  let res;
-  if (isVideo) { await setMode('VIDEO'); res = S.lm.detectForVideo(c, nextTs()); }
-  else { await setMode('IMAGE'); res = S.lm.detect(c); }
-  if (!res.faceLandmarks || !res.faceLandmarks.length) throw new Error('No face found in the image.');
-  const g = extractGeometry(res.faceLandmarks[0], W, H);
-  sampler.setSource(c, W, H);
+  await setMode(isVideo ? 'VIDEO' : 'IMAGE');
+  const detect = c => (isVideo ? S.lm.detectForVideo(c, nextTs()) : S.lm.detect(c));
+  const first = isVideo && S.live.rot ? S.live.rot : 0;
+  let c, g;
+  // Find an orientation where a face is detected, then turn it fully upright.
+  for (let i = 0; i < 4 && !g; i++) {
+    c = rotateInto(src, W, H, (first + i) % 4);
+    const res = detect(c);
+    if (res.faceLandmarks && res.faceLandmarks.length) g = extractGeometry(res.faceLandmarks[0], c.width, c.height);
+  }
+  if (!g) throw new Error('No face found in the image.');
+  const turn = uprightTurns(g);
+  if (turn) {
+    c = rotateInto(c, c.width, c.height, turn);
+    const res = detect(c);
+    if (!res.faceLandmarks || !res.faceLandmarks.length) throw new Error('No face found in the image.');
+    g = extractGeometry(res.faceLandmarks[0], c.width, c.height);
+  }
+  sampler.setSource(c, c.width, c.height);
   const cap = buildCap(g, kind, sampler);
-  cap.canvas = c; cap.W = W; cap.H = H; cap.time = new Date().toISOString();
+  cap.canvas = c; cap.W = c.width; cap.H = c.height; cap.time = new Date().toISOString();
   if (kind === 'primary') initRuler(cap);
   return cap;
 }
