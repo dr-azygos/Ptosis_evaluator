@@ -55,7 +55,8 @@
       <li>Seat the patient, head upright, brows relaxed. Hold the phone ~25–30 cm away at the patient's eye level.</li>
       <li>Torch turns on automatically. Ask the patient to look straight at the light — a white reflex dot appears on each cornea.</li>
       <li>Keep the forehead, both eyes and the nose in the frame — the face finder needs most of the face. If it still can't find one, <b>Capture</b> anyway and drag the markers into place by hand.</li>
-      <li>Wait for all checks to turn green, then <b>Capture</b>. Measurements are taken along the axis perpendicular to the inter-pupillary line.</li>
+      <li>Line the eyes up inside the AR guide. When all checks are green the app takes the photo by itself (a short burst; it keeps the frame with the eyes most open, so a blink is never measured). Turn <b>Auto</b> off to use the shutter instead.</li>
+      <li>The marking is then done on that photo. Measurements are taken along the axis perpendicular to the inter-pupillary line.</li>
       <li>In Review, drag any marker to correct it (a loupe appears while dragging; use the arrow pad for fine nudges).</li>
       <li>For levator function, capture <b>Down-gaze</b> and <b>Up-gaze</b> while you fix the brow with your thumb.</li>
     </ol>
@@ -102,7 +103,7 @@
       <button id="btnTorch" class="tool" aria-pressed="false">Torch</button>
       <button id="btnRing" class="tool" aria-pressed="false">Light</button>
       <button id="btnCapture" class="capture" aria-label="Capture" disabled></button>
-      <button id="btnZoom" class="tool" aria-pressed="true">Zoom</button>
+      <button id="btnAuto" class="tool" aria-pressed="true">Auto</button>
       <button id="btnFlip" class="tool">Flip</button>
     </div>
   </div>

@@ -112,6 +112,7 @@ body.ringlight #live { background: #fff; }
 .readout { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: .9rem; margin-bottom: 8px; }
 .readout th, .readout td { padding: 2px 6px; text-align: center; }
 .readout th:first-child, .readout td:first-child { text-align: left; color: var(--muted); font-weight: 500; }
+.readout td.guide, .readout td.guide:first-child { text-align: center; color: var(--text); font-weight: 500; padding: 6px 4px; }
 .readout thead th { color: var(--muted); font-size: .75rem; font-weight: 600; }
 
 .seg { display: flex; background: var(--panel2); border-radius: 10px; padding: 3px; gap: 3px; margin-bottom: 8px; }

@@ -1,5 +1,5 @@
 import {
-  EYES, dist, mid, makeFrame, toUV, fromUV, extractGeometry, Sampler,
+  EYES, dist, mid, makeFrame, toUV, fromUV, polyAt, extractGeometry, Sampler,
   autoPrimary, autoGaze, measurePrimary, measureGaze, ptosisGrade, lfGrade, suggestions,
 } from './analysis.js';
 
@@ -7,6 +7,7 @@ const MP_VERSION = '0.10.14';
 const MP_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}`;
 const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
 const STAGES = ['primary', 'down', 'up'];
+const AUTO_MS = 1200; // aligned this long → automatic photo
 const STAGE_TEXT = {
   primary: 'Patient looks straight at the light, brows relaxed.',
   down: 'Patient looks fully DOWN. Fix the brow with your thumb.',
@@ -39,7 +40,7 @@ const S = {
   caps: { primary: null, down: null, up: null },
   stage: 'primary',
   lm: null, lmMode: null, lmLoading: null, lastTs: 0,
-  stream: null, track: null, torch: false, ring: false, zoom: true,
+  stream: null, track: null, torch: false, ring: false, zoom: true, auto: true,
   live: { running: false, cap: null, geom: null, view: null, lastTime: -1, ok: false, cfg: { q: 0, pad: 1 }, miss: 0, src: null, rc: null, W: 0, H: 0 },
   rv: { which: 'primary', view: 'both', drag: null, sel: null, T: null, pending: false },
   clinical: { phenylephrine: '', bells: '', jawwink: false, fatigue: false, notes: '' },
@@ -116,7 +117,7 @@ function setRing(on) { S.ring = on; document.body.classList.toggle('ringlight', 
 function updateToolButtons() {
   $('btnTorch').setAttribute('aria-pressed', S.torch);
   $('btnRing').setAttribute('aria-pressed', S.ring);
-  $('btnZoom').setAttribute('aria-pressed', S.zoom);
+  $('btnAuto').setAttribute('aria-pressed', S.auto);
 }
 
 // ---------------- view transforms & drawing ----------------
@@ -280,6 +281,48 @@ function measureCap(cap) {
   const icd = S.caps.primary ? measurePrimary(S.caps.primary, S.settings).icd : null;
   return measureGaze(cap, S.settings, icd);
 }
+// Live view: alignment guide only. Measurements are made on the captured photo.
+function drawGuide(ctx, T, cap, g, u, ok) {
+  const col = ok ? '#3ddc84' : '#ffb547';
+  const pts = EYES.map(s => T.toS(cap.eyes[s].h.reflex || cap.eyes[s].irisC));
+  line(ctx, pts[0], pts[1], col, 1.5 * u, [6 * u, 5 * u]);
+  for (const s of EYES) {
+    const E = cap.eyes[s], h = E.h;
+    if (g) for (const poly of [g[s].upper, g[s].lower]) {
+      ctx.save(); ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.lineWidth = 1.2 * u; ctx.beginPath();
+      poly.forEach((p, i) => { const q = T.toS(p); i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); });
+      ctx.stroke(); ctx.restore();
+    }
+    const c = T.toS(h.limbN ? mid(h.limbN, h.limbT) : E.irisC);
+    const r = (h.limbN ? dist(h.limbN, h.limbT) / 2 : E.irisRpx) * T.k;
+    ctx.save(); ctx.strokeStyle = col; ctx.lineWidth = 2 * u;
+    ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, Math.PI * 2); ctx.stroke();
+    // corner brackets around the eye
+    const b = r * 2.6;
+    for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+      ctx.beginPath();
+      ctx.moveTo(c.x + sx * b, c.y + sy * b * 0.55 - sy * 10 * u);
+      ctx.lineTo(c.x + sx * b, c.y + sy * b * 0.55);
+      ctx.lineTo(c.x + sx * b - sx * 10 * u, c.y + sy * b * 0.55);
+      ctx.stroke();
+    }
+    ctx.restore();
+    if (S.stage === 'primary') {
+      const R = T.toS(h.reflex);
+      ctx.save();
+      if (E.flags.reflex) { ctx.fillStyle = COLORS.reflex; ctx.beginPath(); ctx.arc(R.x, R.y, 3.5 * u, 0, Math.PI * 2); ctx.fill(); }
+      else { ctx.strokeStyle = '#ff6b6b'; ctx.lineWidth = 1.5 * u; ctx.beginPath(); ctx.arc(R.x, R.y, 6 * u, 0, Math.PI * 2); ctx.stroke(); }
+      ctx.restore();
+    }
+  }
+  if (S.live.okSince && S.auto) {
+    const p = Math.min(1, (performance.now() - S.live.okSince) / AUTO_MS);
+    const m = mid(pts[0], pts[1]);
+    ctx.save(); ctx.strokeStyle = '#3ddc84'; ctx.lineWidth = 4 * u;
+    ctx.beginPath(); ctx.arc(m.x, m.y, 22 * u, -Math.PI / 2, -Math.PI / 2 + p * Math.PI * 2); ctx.stroke(); ctx.restore();
+  }
+}
+
 function drawOverlay(ctx, T, cap, m, u) {
   if (cap.kind === 'primary') { drawPrimaryOverlay(ctx, T, cap, m, u); if (S.settings.calib === 'ruler') drawRuler(ctx, T, cap, u, S.settings.rulerMm); }
   else drawGazeOverlay(ctx, T, cap, m, u);
@@ -297,8 +340,8 @@ function smoothCap(prev, cur, t) {
   cur.irisDiamPx += (prev.irisDiamPx - cur.irisDiamPx) * (1 - t);
   return cur;
 }
-function buildCap(g, kind, smp) {
-  const cap = kind === 'primary' ? autoPrimary(g, smp, { hvid: S.settings.hvid }) : autoGaze(g, kind);
+function buildCap(g, kind, smp, opts = {}) {
+  const cap = kind === 'primary' ? autoPrimary(g, smp, { hvid: S.settings.hvid, ...opts }) : autoGaze(g, kind);
   for (const s of EYES) cap.eyes[s].irisC = { ...g[s].iris.c };
   return cap;
 }
@@ -372,7 +415,7 @@ function liveLoop() {
     S.live.miss = 0;
     S.live.src = hit.src; S.live.W = hit.W; S.live.H = hit.H;
     sampler.setSource(hit.src, hit.W, hit.H);
-    S.live.cap = smoothCap(S.live.cap, buildCap(hit.g, S.stage, sampler), 0.45);
+    S.live.cap = smoothCap(S.live.cap, buildCap(hit.g, S.stage, sampler, { skipCrease: true }), 0.45);
     S.live.geom = hit.g;
   } else {
     S.live.cap = null; S.live.geom = null;
@@ -397,7 +440,7 @@ function drawLive() {
   const T = makeT(box, c.width, c.height, S.settings.facing === 'user');
   ctx.fillStyle = S.ring ? '#fff' : '#000'; ctx.fillRect(0, 0, c.width, c.height);
   drawImageView(ctx, src, W, H, T);
-  if (cap) drawOverlay(ctx, T, cap, measureCap(cap), u);
+  if (cap) drawGuide(ctx, T, cap, S.live.geom, u, S.live.ok);
 }
 
 function chip(text, cls) { return `<span class="chip ${cls}">${text}</span>`; }
@@ -422,18 +465,22 @@ function updateLivePanel() {
     }
   }
   el.checks.innerHTML = chips.join('');
-  $('btnCapture').disabled = false;
+  $('btnCapture').disabled = S.live.busy;
   $('btnCapture').style.borderColor = ok ? 'var(--ok)' : 'var(--accent)';
+  S.live.ok = ok;
 
-  const m = cap ? measureCap(cap) : null;
-  const val = (s, k) => (m ? f1(m.eyes[s][k]) : '—');
-  // Eyes as rows, parameters as columns: three short rows fit small phones.
-  const cols = S.stage === 'primary'
-    ? [['MRD1', 'mrd1'], ['MRD2', 'mrd2'], ['PFH', 'pfh'], ['MCD', 'mcd'], ['HVID', 'hvid']]
-    : [['Lid height above canthi', 'lidHeight']];
-  const head = cols.map(([n]) => `<th>${n}</th>`).join('');
-  const rows = EYES.map(s => `<tr><td>${s}</td>${cols.map(([, k]) => `<td>${val(s, k)}</td>`).join('')}</tr>`).join('');
-  el.liveTable.innerHTML = `<thead><tr><th>mm</th>${head}</tr></thead><tbody>${rows}</tbody>`;
+  // Auto-capture once everything has stayed aligned for a moment.
+  const now = performance.now();
+  if (!ok || S.live.busy) S.live.okSince = null;
+  else if (!S.live.okSince) S.live.okSince = now;
+  let msg;
+  if (S.live.busy) msg = 'Taking photo — hold still…';
+  else if (!cap) msg = 'Find the face: forehead, both eyes and nose in view.';
+  else if (!ok) msg = 'Line up: eyes level, face straight to the camera' + (S.stage === 'primary' ? ', patient looking at the light.' : '.');
+  else if (S.auto) msg = 'Hold still — taking the photo…';
+  else msg = 'Aligned. Tap the shutter to take the photo.';
+  el.liveTable.innerHTML = `<tbody><tr><td class="guide">${msg}</td></tr></tbody>`;
+  if (S.auto && S.live.okSince && now - S.live.okSince >= AUTO_MS) captureLive();
 }
 
 async function goLive(stage) {
@@ -491,7 +538,7 @@ async function captureFromSource(src, W, H, kind, isVideo) {
     if (l2) { c = c2; g = extractGeometry(l2, c.width, c.height); }
   }
   sampler.setSource(c, c.width, c.height);
-  const cap = buildCap(g, kind, sampler);
+  const cap = buildCap(g, kind, sampler, { refineLids: true });
   cap.canvas = c; cap.W = c.width; cap.H = c.height; cap.time = new Date().toISOString();
   if (kind === 'primary') initRuler(cap);
   return cap;
@@ -526,22 +573,58 @@ function initRuler(cap) {
   cap.ruler = { a: fromUV(F, cu - half, cv), b: fromUV(F, cu + half, cv) };
 }
 
+const nextFrame = v => new Promise(res => (v.requestVideoFrameCallback ? v.requestVideoFrameCallback(() => res()) : setTimeout(res, 50)));
+
+// Openness of the narrower eye (fissure height / iris radius): low on a blink.
+function openness(g) {
+  return Math.min(...EYES.map(s => {
+    const F = makeFrame(g.OD.iris.c, g.OS.iris.c, g.nose);
+    const u = toUV(F, g[s].iris.c).u;
+    const up = polyAt(F, g[s].upper, u), lo = polyAt(F, g[s].lower, u);
+    return up && lo ? (toUV(F, lo).v - toUV(F, up).v) / g[s].iris.r : 0;
+  }));
+}
+
+// Take a short burst of frames and keep the one with the eyes most open, so a
+// blink or half-blink is never measured as ptosis. Marking runs on that photo.
 async function captureLive() {
   const v = el.video;
-  if (!v.videoWidth) return;
+  if (!v.videoWidth || S.live.busy) return;
+  S.live.busy = true; S.live.okSince = null;
+  const vw = v.videoWidth, vh = v.videoHeight;
   const flash = document.createElement('div');
   flash.style.cssText = 'position:fixed;inset:0;background:#fff;opacity:.6;pointer-events:none;transition:opacity .25s';
   document.body.appendChild(flash);
   requestAnimationFrame(() => { flash.style.opacity = '0'; setTimeout(() => flash.remove(), 300); });
   try {
-    const cap = await captureFromSource(v, v.videoWidth, v.videoHeight, S.stage, true);
+    let best = null, bestScore = -1, cur = document.createElement('canvas');
+    const scratch = document.createElement('canvas');
+    for (let i = 0; i < 6; i++) {
+      await nextFrame(v);
+      cur.width = vw; cur.height = vh;
+      cur.getContext('2d').drawImage(v, 0, 0, vw, vh);
+      const src = isPlain(S.live.cfg) ? cur : prepare(cur, vw, vh, S.live.cfg, scratch);
+      const res = S.lm.detectForVideo(src, nextTs());
+      const lms = res.faceLandmarks && res.faceLandmarks[0];
+      const score = lms ? (S.stage === 'primary' ? openness(extractGeometry(lms, src.width, src.height)) : 1) : 0;
+      if (score > bestScore) { bestScore = score; const t = best; best = cur; cur = t || document.createElement('canvas'); }
+      if (S.stage !== 'primary' && lms) break;
+    }
+    S.live.running = false;
+    el.loading.hidden = false; el.loading.textContent = 'Marking the photo…';
+    await new Promise(r => setTimeout(r, 30));
+    const cap = await captureFromSource(best, vw, vh, S.stage, true);
     S.caps[S.stage] = cap;
     S.rv.which = S.stage;
-    S.live.running = false;
     stopCamera(); setRing(false);
+    el.loading.hidden = true;
     openReview();
   } catch (e) {
+    el.loading.hidden = true;
     el.instruction.textContent = `⚠ ${e.message}`;
+    if (!S.live.running) { S.live.running = true; requestAnimationFrame(liveLoop); }
+  } finally {
+    S.live.busy = false;
   }
 }
 
@@ -738,7 +821,7 @@ function resultRows(R) {
   rows.push({ name: 'Lid height, down-gaze', sub: 'Above intercanthal line', OD: md && md.eyes.OD.lidHeight, OS: md && md.eyes.OS.lidHeight });
   rows.push({ name: 'Lid height, up-gaze', sub: 'Above intercanthal line', OD: mu && mu.eyes.OD.lidHeight, OS: mu && mu.eyes.OS.lidHeight });
   rows.push({ name: 'Levator function', sub: 'Up − down excursion', OD: lf && lf.OD, OS: lf && lf.OS, key: 'lf' });
-  const grade = s => (mp ? ptosisGrade(mp.eyes[s].mrd1, n) : null);
+  const grade = s => (mp ? ptosisGrade(mp.eyes[s].mrd1, n, mp.eyes[s === 'OD' ? 'OS' : 'OD'].mrd1) : null);
   return { rows, grade };
 }
 
@@ -867,7 +950,8 @@ function init() {
   $('btnBack').addEventListener('click', () => { stopLive(); show('home'); });
   $('btnTorch').addEventListener('click', () => setTorch(!S.torch));
   $('btnRing').addEventListener('click', () => setRing(!S.ring));
-  $('btnZoom').addEventListener('click', () => { S.zoom = !S.zoom; S.live.view = null; updateToolButtons(); });
+  $('btnAuto').addEventListener('click', () => { S.auto = !S.auto; S.live.okSince = null; updateToolButtons(); });
+  el.liveCanvas.addEventListener('click', () => { S.zoom = !S.zoom; S.live.view = null; });
   $('btnFlip').addEventListener('click', async () => {
     S.settings.facing = S.settings.facing === 'user' ? 'environment' : 'user';
     $('facing').value = S.settings.facing; saveSettings();

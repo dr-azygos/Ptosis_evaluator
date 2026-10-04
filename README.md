@@ -17,7 +17,7 @@ There is no install and no build step. Everything runs on the device and no imag
 | **Corneal coverage** | Iris radius − MRD1 (how much cornea the upper lid covers) |
 | **Inferior scleral show** | MRD2 − iris radius |
 | **Levator function** | Upper-lid excursion from down-gaze to up-gaze (two captures, brow fixed) |
-| **Ptosis grade** | Shortfall from normal MRD1 (default 4.5 mm): mild ≤ 2, moderate ≤ 3.5, severe > 3.5 mm |
+| **Ptosis grade** | Ptosis only when MRD1 ≤ 2.5 mm or the lid is ≥ 2 mm lower than the fellow eye; MRD1 2.5–3.5 mm is reported as low-normal. Severity is the shortfall from normal MRD1 (default 4.5 mm) or the fellow eye: mild ≤ 2, moderate ≤ 3.5, severe > 3.5 mm |
 | **LF grade** | Excellent ≥ 12, Good 8–11, Fair 5–7, Poor ≤ 4 mm |
 
 All vertical distances are measured perpendicular to the inter-pupillary line, so a slight head tilt does not inflate the values.
@@ -35,8 +35,8 @@ You can also record the phenylephrine test, Bell's phenomenon, jaw-winking and f
 1. Open the site on the phone over **HTTPS** (the camera needs a secure context).
 2. **Rear camera + torch (recommended):** the examiner holds the phone 25–30 cm away at the patient's eye level, and the patient looks at the torch.
    If the torch is not available (for example on iOS Safari), use a pen-torch held beside the lens, or the front camera with the **Ring light** button, which turns the screen white.
-3. Keep the forehead, both eyes and the nose in the frame. Wait for the checks (distance, level, facing, reflex) to turn green, then press **Capture**.
-   The app copes with a phone held sideways or upside-down and with tight close-ups. If it still finds no face, press **Capture** anyway: the markers start in default positions for you to drag into place. The two **I** markers go on the nasal and temporal limbus; they set the mm scale.
+3. Keep the forehead, both eyes and the nose in the frame. The live view shows only an AR alignment guide (eye brackets, iris rings, reflex dots, level line). When the checks (distance, level, facing, reflex) stay green, the app takes the photo automatically. It takes a short burst and keeps the frame with the eyes most open, so a blink is never measured. Turn **Auto** off to use the shutter button instead; tap the preview to toggle eye zoom.
+   The app copes with a phone held sideways or upside-down and with tight close-ups. If it still finds no face, press the shutter anyway: the markers start in default positions for you to drag into place. The two **I** markers go on the nasal and temporal limbus; they set the mm scale.
 4. In **Review**, drag markers to correct them. A loupe magnifies the area while you drag, and the arrow pad nudges the selected marker by about 0.1 mm.
 5. For levator function, open **Down-gaze** and capture, then **Up-gaze** and capture. Fix the brow with your thumb for both.
 6. Copy, share or save the report, or save an annotated image. History is kept only on this phone.

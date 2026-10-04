@@ -280,6 +280,63 @@ export function findLimbus(sampler, F, c, r0) {
   return { r, c: fromUV(F, cu, C.v) };
 }
 
+// Lid margin refinement. The face model's lid contour has the right shape but
+// can sit too low or too high. Just outside the limbus, white sclera meets the
+// lid margin with strong contrast; find that edge in a few columns on each side,
+// and shift the model's lid point at the pupil by the median offset.
+export function refineLid(sampler, F, R, r, poly, mmpp, upper) {
+  const P = sampler.patch(
+    Math.min(...poly.map(p => p.x)) - 4, Math.min(...poly.map(p => p.y)) - 6 / mmpp,
+    Math.max(...poly.map(p => p.x)) - Math.min(...poly.map(p => p.x)) + 8,
+    Math.max(...poly.map(p => p.y)) - Math.min(...poly.map(p => p.y)) + 12 / mmpp);
+  if (!P) return null;
+  const at = p => sampleGray(P, p);
+  const dir = upper ? -1 : 1; // scanning away from the horizontal meridian
+  const win = 1.5 / mmpp, k = Math.max(1, Math.round(0.25 / mmpp));
+  const offsets = [], sides = new Set();
+  for (const side of [-1, 1]) {
+    for (const f of [1.2, 1.35, 1.5]) {
+      const u = R.u + side * f * r;
+      const lm = polyAt(F, poly, u);
+      if (!lm) continue;
+      const vLm = toUV(F, lm).v;
+      // From just off the meridian out to past the model's lid position.
+      const vA = R.v + dir * 0.15 * r, vB = vLm + dir * win;
+      const n = Math.round(Math.abs(vB - vA));
+      if (n < 4) continue;
+      const prof = [];
+      for (let i = 0; i <= n; i++) {
+        let a = 0, c = 0;
+        for (const du of [-1, 0, 1]) { const g = at(fromUV(F, u + du, vA + dir * i)); if (!Number.isNaN(g)) { a += g; c++; } }
+        prof.push(c ? a / c : NaN);
+      }
+      // First strong bright-sclera → darker-lid step met moving away from the
+      // meridian (later steps are crease / brow shadows), refined to its peak.
+      const thr = upper ? 18 : 12;
+      let best = 0, bi = -1;
+      for (let i = k; i < prof.length - k; i++) {
+        const drop = prof[i - k] - prof[i + k];
+        if (Math.abs(vA + dir * i - vLm) > win) continue;
+        if (bi < 0 && drop < thr) continue;
+        if (bi >= 0 && drop < best) break;
+        best = drop; bi = i;
+      }
+      if (bi < 0) continue;
+      // The side nearer the meridian must look like sclera (bright).
+      const sclera = prof.slice(0, bi).filter(x => !Number.isNaN(x));
+      if (!sclera.length || Math.max(...sclera) < 120) continue;
+      offsets.push(vA + dir * bi - vLm);
+      sides.add(side);
+    }
+  }
+  // Need agreement from both sides of the iris, within 0.7 mm.
+  if (sides.size < 2 || offsets.length < 3) return null;
+  offsets.sort((a, b) => a - b);
+  if ((offsets[offsets.length - 1] - offsets[0]) * mmpp > 0.7) return null;
+  const off = offsets[offsets.length >> 1];
+  return Math.max(-1.5 / mmpp, Math.min(1.5 / mmpp, off));
+}
+
 // ---------- auto-placement of measurement handles ----------
 export function autoPrimary(g, sampler, opts = {}) {
   const reflex = {}, found = {};
@@ -296,12 +353,29 @@ export function autoPrimary(g, sampler, opts = {}) {
   }
   const irisDiamPx = limb.OD.r + limb.OS.r; // mean diameter
   const mmpp = opts.hvid / irisDiamPx;
+  // Lid refinement is applied to both eyes or neither: correcting one eye only
+  // would create an artificial asymmetry.
+  const ref = { OD: {}, OS: {} };
+  if (sampler && opts.refineLids) {
+    for (const s of EYES) {
+      const R = toUV(F, reflex[s]);
+      ref[s].upper = refineLid(sampler, F, R, limb[s].r, g[s].upper, mmpp, true);
+      ref[s].lower = refineLid(sampler, F, R, limb[s].r, g[s].lower, mmpp, false);
+    }
+    for (const k of ['upper', 'lower']) {
+      if (ref.OD[k] == null || ref.OS[k] == null) { ref.OD[k] = null; ref.OS[k] = null; }
+    }
+  }
   const eyes = {};
   for (const s of EYES) {
     const e = g[s], R = toUV(F, reflex[s]);
     const L = toUV(F, limb[s].c), nasal = s === 'OD' ? 1 : -1;
-    const upper = polyAt(F, e.upper, R.u) || polyApex(F, e.upper);
-    const lower = polyAt(F, e.lower, R.u) || fromUV(F, R.u, toUV(F, e.lower[4]).v);
+    let upper = polyAt(F, e.upper, R.u) || polyApex(F, e.upper);
+    let lower = polyAt(F, e.lower, R.u) || fromUV(F, R.u, toUV(F, e.lower[4]).v);
+    const ou = ref[s].upper, ol = ref[s].lower;
+    const lidRefined = ou != null;
+    if (ou != null) { const p = toUV(F, upper); upper = fromUV(F, p.u, p.v + ou); }
+    if (ol != null) { const p = toUV(F, lower); lower = fromUV(F, p.u, p.v + ol); }
     const brow = polyAt(F, e.brow, R.u) || e.brow[2];
     let crease = null;
     if (sampler && !opts.skipCrease) crease = findCrease(sampler, F, upper, brow, mmpp);
@@ -314,7 +388,7 @@ export function autoPrimary(g, sampler, opts = {}) {
         limbN: fromUV(F, L.u + nasal * limb[s].r, L.v),
         limbT: fromUV(F, L.u - nasal * limb[s].r, L.v),
       },
-      flags: { reflex: found[s], crease: !!crease, limbus: limb[s].found },
+      flags: { reflex: found[s], crease: !!crease, limbus: limb[s].found, lid: lidRefined },
       irisRpx: limb[s].r,
     };
   }
@@ -390,9 +464,16 @@ export function measureGaze(cap, settings, icdMm) {
 }
 
 // ---------- clinical interpretation ----------
-export function ptosisGrade(mrd1, normal) {
-  const amt = normal - mrd1;
-  if (amt < 1) return { amount: Math.max(0, amt), label: 'No significant ptosis', level: 0 };
+// Ptosis is diagnosed only when MRD1 ≤ 2.5 mm, or when the lid sits ≥ 2 mm
+// lower than the fellow eye. Normal adult MRD1 ranges ~3–5 mm, so a value of
+// 3 mm alone is reported as low-normal, not ptosis. Severity uses the
+// shortfall from the normal reference (or the fellow eye, if larger).
+export function ptosisGrade(mrd1, normal, fellow) {
+  const asym = fellow != null ? fellow - mrd1 : 0;
+  if (!(mrd1 <= 2.5 || asym >= 2)) {
+    return { amount: 0, label: mrd1 < 3.5 ? 'Normal (low-normal lid)' : 'Normal', level: 0 };
+  }
+  const amt = Math.max(normal - mrd1, asym);
   if (amt <= 2) return { amount: amt, label: 'Mild ptosis', level: 1 };
   if (amt <= 3.5) return { amount: amt, label: 'Moderate ptosis', level: 2 };
   return { amount: amt, label: 'Severe ptosis', level: 3 };
@@ -411,7 +492,7 @@ export function suggestions(m, lf, clinical, normal) {
   if (!m) return out;
   for (const s of EYES) {
     const e = m.eyes[s];
-    const g = ptosisGrade(e.mrd1, normal);
+    const g = ptosisGrade(e.mrd1, normal, m.eyes[s === 'OD' ? 'OS' : 'OD'].mrd1);
     if (g.level === 0) continue;
     const parts = [];
     const l = lf ? lf[s] : null;
@@ -430,7 +511,7 @@ export function suggestions(m, lf, clinical, normal) {
   }
   if (EYES.some(s => m.eyes[s].pfh <= 0 || m.eyes[s].brow <= 0))
     out.unshift('⚠ Implausible values (negative fissure height or brow distance): markers are inverted or misplaced. Re-capture with the face upright, or correct the markers.');
-  if (Math.abs(m.eyes.OD.mrd1 - m.eyes.OS.mrd1) >= 1.5)
+  if (Math.abs(m.eyes.OD.mrd1 - m.eyes.OS.mrd1) >= 2)
     out.push('Asymmetry ≥ 1.5 mm — check for Hering\'s dependence (lift the ptotic lid and re-check the fellow eye).');
   if (clinical.jawwink) out.push('Jaw-winking noted — consider Marcus Gunn synkinesis before planning surgery.');
   if (clinical.fatigue) out.push('Fatigability / variability noted — rule out ocular myasthenia (ice-pack test, AChR antibodies).');
