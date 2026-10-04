@@ -14,12 +14,12 @@ const STAGE_TEXT = {
 };
 const COLORS = {
   reflex: '#ffe14d', upper: '#35d0ff', lower: '#7dff6b', crease: '#ff5ce1',
-  brow: '#ff9f40', med: '#3ddc84', lat: '#3ddc84', ruler: '#ff6b6b',
+  brow: '#ff9f40', med: '#3ddc84', lat: '#3ddc84', ruler: '#ff6b6b', limbN: '#c9d6e3', limbT: '#c9d6e3',
 };
-const LETTER = { reflex: 'R', upper: 'U', lower: 'L', crease: 'C', brow: 'B', med: 'M', lat: 'T', a: '◆', b: '◆' };
+const LETTER = { reflex: 'R', upper: 'U', lower: 'L', crease: 'C', brow: 'B', med: 'M', lat: 'T', a: '◆', b: '◆', limbN: 'I', limbT: 'I' };
 const HANDLE_NAME = {
   reflex: 'light reflex', upper: 'upper lid margin', lower: 'lower lid margin', crease: 'lid crease',
-  brow: 'brow', med: 'medial canthus', lat: 'lateral canthus', a: 'ruler end', b: 'ruler end',
+  brow: 'brow', med: 'medial canthus', lat: 'lateral canthus', a: 'ruler end', b: 'ruler end', limbN: 'nasal limbus', limbT: 'temporal limbus',
 };
 
 const $ = id => document.getElementById(id);
@@ -40,7 +40,7 @@ const S = {
   stage: 'primary',
   lm: null, lmMode: null, lmLoading: null, lastTs: 0,
   stream: null, track: null, torch: false, ring: false, zoom: true,
-  live: { running: false, cap: null, geom: null, view: null, lastTime: -1, ok: false, rot: 0, miss: 0, src: null, rc: null },
+  live: { running: false, cap: null, geom: null, view: null, lastTime: -1, ok: false, cfg: { q: 0, pad: 1 }, miss: 0, src: null, rc: null, W: 0, H: 0 },
   rv: { which: 'primary', view: 'both', drag: null, sel: null, T: null, pending: false },
   clinical: { phenylephrine: '', bells: '', jawwink: false, fatigue: false, notes: '' },
 };
@@ -62,7 +62,7 @@ async function ensureLandmarker() {
       const opts = d => ({
         baseOptions: { modelAssetPath: MODEL_URL, delegate: d },
         runningMode: 'VIDEO', numFaces: 1,
-        minFaceDetectionConfidence: 0.5, minTrackingConfidence: 0.5,
+        minFaceDetectionConfidence: 0.3, minFacePresenceConfidence: 0.3, minTrackingConfidence: 0.3,
       });
       let lm;
       try { lm = await FaceLandmarker.createFromOptions(fileset, opts('GPU')); }
@@ -188,7 +188,8 @@ function drawPrimaryOverlay(ctx, T, cap, m, u) {
   const F = m.F;
   for (const s of EYES) {
     const E = cap.eyes[s], h = E.h, me = m.eyes[s];
-    const R = toUV(F, h.reflex), irisR = E.irisRpx;
+    const limb = h.limbN ? { c: mid(h.limbN, h.limbT), r: dist(h.limbN, h.limbT) / 2 } : null;
+    const R = toUV(F, h.reflex), irisR = limb ? limb.r : E.irisRpx;
     const at = v => T.toS(fromUV(F, R.u, v));
     const sR = T.toS(h.reflex);
     const latSide = Math.sign(toUV(F, h.lat).u - R.u) || 1;
@@ -196,9 +197,11 @@ function drawPrimaryOverlay(ctx, T, cap, m, u) {
     const align = side(R.v).x > sR.x ? 'left' : 'right';
     const tick = (v, color, half = irisR, w = 2) => line(ctx, T.toS(fromUV(F, R.u - half, v)), T.toS(fromUV(F, R.u + half, v)), color, w * u);
 
-    if (E.irisC) {
+    if (limb) line(ctx, T.toS(h.limbN), T.toS(h.limbT), 'rgba(201,214,227,.8)', 1.5 * u);
+    const irisCentre = limb ? limb.c : E.irisC;
+    if (irisCentre) {
       ctx.save(); ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = u;
-      const c = T.toS(E.irisC); ctx.beginPath(); ctx.arc(c.x, c.y, irisR * T.k, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+      const c = T.toS(irisCentre); ctx.beginPath(); ctx.arc(c.x, c.y, irisR * T.k, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
     }
     // canthal span (PFW)
     line(ctx, T.toS(h.med), T.toS(h.lat), 'rgba(61,220,132,.7)', 1.5 * u, [4 * u, 4 * u]);
@@ -300,21 +303,31 @@ function buildCap(g, kind, smp) {
   return cap;
 }
 
-// Draw `src` rotated clockwise by q quarter-turns into `out` (created if absent).
-function rotateInto(src, W, H, q, out) {
+// Draw `src` rotated clockwise by cfg.q quarter-turns, optionally centred on a
+// larger grey canvas (cfg.pad > 1). Padding lets the detector find a face that
+// fills or overflows the frame, as in a close-up of the eyes.
+function prepare(src, W, H, cfg, out) {
   const c = out || document.createElement('canvas');
-  const sw = q % 2 === 1;
-  const w = sw ? H : W, h = sw ? W : H;
+  const sw = cfg.q % 2 === 1, pad = cfg.pad || 1;
+  const rw = sw ? H : W, rh = sw ? W : H;
+  const w = Math.round(rw * pad), h = Math.round(rh * pad);
   if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
   const ctx = c.getContext('2d');
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  if (q === 1) { ctx.translate(w, 0); ctx.rotate(Math.PI / 2); }
-  else if (q === 2) { ctx.translate(w, h); ctx.rotate(Math.PI); }
-  else if (q === 3) { ctx.translate(0, h); ctx.rotate(-Math.PI / 2); }
-  ctx.drawImage(src, 0, 0, W, H);
+  if (pad > 1) { ctx.fillStyle = '#808080'; ctx.fillRect(0, 0, w, h); }
+  ctx.translate(w / 2, h / 2);
+  ctx.rotate(cfg.q * Math.PI / 2);
+  ctx.drawImage(src, -W / 2, -H / 2, W, H);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   return c;
 }
+const isPlain = cfg => !cfg.q && (cfg.pad || 1) === 1;
+// Orientations / framings tried, in order, when no face is found.
+const SEARCH = [
+  { q: 0, pad: 1 }, { q: 0, pad: 1.8 }, { q: 1, pad: 1 }, { q: 3, pad: 1 }, { q: 2, pad: 1 },
+  { q: 1, pad: 1.8 }, { q: 3, pad: 1.8 }, { q: 2, pad: 1.8 },
+];
+
 // Quarter-turns (clockwise) needed to make the detected face upright.
 function uprightTurns(g) {
   const m = mid(g.OD.iris.c, g.OS.iris.c);
@@ -327,40 +340,55 @@ function liveLoop() {
   requestAnimationFrame(liveLoop);
   const v = el.video;
   if (v.readyState < 2 || !S.lm || S.lmMode !== 'VIDEO' || !v.videoWidth) return;
-  const q = S.live.rot || 0;
+  if (v.currentTime === S.live.lastTime) { drawLive(); return; }
+  S.live.lastTime = v.currentTime;
   const vw = v.videoWidth, vh = v.videoHeight;
-  const W = q % 2 ? vh : vw, H = q % 2 ? vw : vh;
-  if (v.currentTime !== S.live.lastTime) {
-    S.live.lastTime = v.currentTime;
-    const src = q ? (S.live.rc = rotateInto(v, vw, vh, q, S.live.rc)) : v;
-    S.live.src = src;
-    let res;
-    try { res = S.lm.detectForVideo(src, nextTs()); } catch (e) { console.warn(e); return; }
-    if (res.faceLandmarks && res.faceLandmarks.length) {
-      S.live.miss = 0;
-      const g = extractGeometry(res.faceLandmarks[0], W, H);
-      const turn = uprightTurns(g);
-      if (turn) { S.live.rot = (q + turn) % 4; S.live.cap = null; S.live.view = null; return; }
-      sampler.setSource(src, W, H);
-      S.live.cap = smoothCap(S.live.cap, buildCap(g, S.stage, sampler), 0.45);
-      S.live.geom = g;
-    } else {
-      S.live.cap = null; S.live.geom = null;
-      // The model needs a roughly upright face; try the next orientation.
-      if (++S.live.miss > 12) { S.live.miss = 0; S.live.rot = (q + 1) % 4; S.live.view = null; }
+  const run = cfg => {
+    const src = isPlain(cfg) ? v : prepare(v, vw, vh, cfg, S.live.rc || (S.live.rc = document.createElement('canvas')));
+    const W = isPlain(cfg) ? vw : src.width, H = isPlain(cfg) ? vh : src.height;
+    const res = S.lm.detectForVideo(src, nextTs());
+    const lms = res.faceLandmarks && res.faceLandmarks[0];
+    return lms ? { src, W, H, g: extractGeometry(lms, W, H) } : null;
+  };
+  let hit;
+  try {
+    hit = run(S.live.cfg);
+    // While the face is lost, keep trying the usual framing every frame and,
+    // every few frames, one alternative (close-up padding or a rotation).
+    if (!hit && ++S.live.miss % 4 === 0) {
+      const alts = SEARCH.filter(c => c.q !== S.live.cfg.q || c.pad !== S.live.cfg.pad);
+      const alt = alts[(S.live.miss / 4) % alts.length];
+      hit = run(alt);
+      if (hit) S.live.cfg = alt;
     }
-    updateLivePanel();
+  } catch (e) {
+    el.instruction.textContent = `⚠ Face model error: ${e.message || e}`;
+    return;
   }
-  drawLive(W, H);
+  if (hit) {
+    const turn = uprightTurns(hit.g);
+    if (turn) { S.live.cfg = { q: (S.live.cfg.q + turn) % 4, pad: S.live.cfg.pad }; S.live.cap = null; S.live.view = null; drawLive(); return; }
+    if (S.live.miss > 0) el.instruction.textContent = STAGE_TEXT[S.stage];
+    S.live.miss = 0;
+    S.live.src = hit.src; S.live.W = hit.W; S.live.H = hit.H;
+    sampler.setSource(hit.src, hit.W, hit.H);
+    S.live.cap = smoothCap(S.live.cap, buildCap(hit.g, S.stage, sampler), 0.45);
+    S.live.geom = hit.g;
+  } else {
+    S.live.cap = null; S.live.geom = null;
+    if (S.live.miss === 60) el.instruction.textContent = 'No face found. Hold the phone a little further back so the forehead, both eyes and nose are in view, or tap Capture to place the markers by hand.';
+  }
+  updateLivePanel();
+  drawLive();
 }
 
-function drawLive(W, H) {
+function drawLive() {
   const c = el.liveCanvas, u = resizeCanvas(c), ctx = c.getContext('2d');
   const cap = S.live.cap;
-  // Without a face, show the unrotated feed so the preview doesn't spin while
-  // the orientation search runs.
-  const src = cap ? S.live.src || el.video : el.video;
-  if (!cap) { W = el.video.videoWidth; H = el.video.videoHeight; }
+  // Without a face, show the plain feed so the preview doesn't jump around
+  // while other framings are tried.
+  const src = cap ? S.live.src : el.video;
+  const W = cap ? S.live.W : el.video.videoWidth, H = cap ? S.live.H : el.video.videoHeight;
   let box = { x: 0, y: 0, w: W, h: H };
   if (cap && S.zoom) box = bbox(capPoints(cap), 0.3, 0.45);
   const prev = S.live.view;
@@ -394,7 +422,7 @@ function updateLivePanel() {
     }
   }
   el.checks.innerHTML = chips.join('');
-  $('btnCapture').disabled = !cap;
+  $('btnCapture').disabled = false;
   $('btnCapture').style.borderColor = ok ? 'var(--ok)' : 'var(--accent)';
 
   const m = cap ? measureCap(cap) : null;
@@ -419,7 +447,7 @@ async function goLive(stage) {
     el.loading.textContent = 'Loading face model…';
     await setMode('VIDEO');
     el.loading.hidden = true;
-    if (!S.live.running) { S.live.running = true; S.live.cap = null; S.live.view = null; S.live.src = null; S.live.miss = 0; requestAnimationFrame(liveLoop); }
+    if (!S.live.running) { S.live.running = true; S.live.cap = null; S.live.view = null; S.live.src = null; S.live.miss = 0; S.live.cfg = { q: 0, pad: 1 }; requestAnimationFrame(liveLoop); }
   } catch (e) {
     el.loading.textContent = `⚠ ${e.message || e}`;
   }
@@ -439,28 +467,55 @@ function setStage(stage) {
 // ---------------- capture ----------------
 async function captureFromSource(src, W, H, kind, isVideo) {
   await setMode(isVideo ? 'VIDEO' : 'IMAGE');
-  const detect = c => (isVideo ? S.lm.detectForVideo(c, nextTs()) : S.lm.detect(c));
-  const first = isVideo && S.live.rot ? S.live.rot : 0;
-  let c, g;
-  // Find an orientation where a face is detected, then turn it fully upright.
-  for (let i = 0; i < 4 && !g; i++) {
-    c = rotateInto(src, W, H, (first + i) % 4);
-    const res = detect(c);
-    if (res.faceLandmarks && res.faceLandmarks.length) g = extractGeometry(res.faceLandmarks[0], c.width, c.height);
+  const detect = c => {
+    const res = isVideo ? S.lm.detectForVideo(c, nextTs()) : S.lm.detect(c);
+    return res.faceLandmarks && res.faceLandmarks[0];
+  };
+  const tries = isVideo ? [S.live.cfg, ...SEARCH] : SEARCH;
+  let c, lms, cfg;
+  for (const t of tries) {
+    c = prepare(src, W, H, t);
+    lms = detect(c);
+    if (lms) { cfg = t; break; }
   }
-  if (!g) throw new Error('No face found in the image.');
+  if (!lms) {
+    const cap = manualCap(prepare(src, W, H, { q: 0, pad: 1 }), kind);
+    if (kind === 'primary') initRuler(cap);
+    return cap;
+  }
+  let g = extractGeometry(lms, c.width, c.height);
   const turn = uprightTurns(g);
   if (turn) {
-    c = rotateInto(c, c.width, c.height, turn);
-    const res = detect(c);
-    if (!res.faceLandmarks || !res.faceLandmarks.length) throw new Error('No face found in the image.');
-    g = extractGeometry(res.faceLandmarks[0], c.width, c.height);
+    const c2 = prepare(src, W, H, { q: (cfg.q + turn) % 4, pad: cfg.pad });
+    const l2 = detect(c2);
+    if (l2) { c = c2; g = extractGeometry(l2, c.width, c.height); }
   }
   sampler.setSource(c, c.width, c.height);
   const cap = buildCap(g, kind, sampler);
   cap.canvas = c; cap.W = c.width; cap.H = c.height; cap.time = new Date().toISOString();
   if (kind === 'primary') initRuler(cap);
   return cap;
+}
+
+// No face detected (e.g. a tight close-up of the eyes): start with markers in
+// default positions for the examiner to drag into place. Calibration then comes
+// from the limbus markers (I), so the corneal diameter is still used.
+function manualCap(c, kind) {
+  const W = c.width, H = c.height, r = Math.min(W * 0.06, H * 0.12);
+  const ctr = { OD: { x: W * 0.3, y: H * 0.5 }, OS: { x: W * 0.7, y: H * 0.5 } };
+  const at = (p, dx, dy) => ({ x: p.x + dx * r, y: p.y + dy * r });
+  const eyes = {};
+  for (const s of EYES) {
+    const p = ctr[s], nasal = s === 'OD' ? 1 : -1;
+    const h = kind === 'primary'
+      ? { reflex: { ...p }, upper: at(p, 0, -0.6), lower: at(p, 0, 0.9), crease: at(p, 0, -1.8), brow: at(p, 0, -3), med: at(p, 2.3 * nasal, 0.2), lat: at(p, -2.3 * nasal, 0), limbN: at(p, nasal, 0), limbT: at(p, -nasal, 0) }
+      : { upper: at(p, 0, -0.6), med: at(p, 2.3 * nasal, 0.2), lat: at(p, -2.3 * nasal, 0) };
+    eyes[s] = { h, flags: { reflex: false, crease: false }, irisRpx: r, irisC: { ...p } };
+  }
+  return {
+    kind, eyes, irisDiamPx: 2 * r, manual: true, nose: { x: W / 2, y: H / 2 + 6 * r },
+    canvas: c, W, H, time: new Date().toISOString(),
+  };
 }
 
 function initRuler(cap) {
@@ -707,7 +762,8 @@ function renderResults() {
   const tips = suggestions(mp, lf, S.clinical, S.settings.normalMrd1);
   if (!mp) tips.unshift('Capture primary gaze to grade ptosis.');
   if (mp && !lf) tips.push('Levator function not yet measured — capture Down-gaze and Up-gaze.');
-  if (mp && EYES.some(s => !mp.eyes[s].reflexFound)) tips.push('Corneal reflex not detected in one eye — MRD1 estimated from iris centre. Verify, or re-capture with the light on.');
+  if (Object.values(S.caps).some(c => c && c.manual)) tips.unshift('Face not detected automatically — markers were placed at default positions. Drag every marker onto the eye, including the two I markers onto the nasal and temporal limbus (they set the mm scale).');
+  if (mp && !S.caps.primary.manual && EYES.some(s => !mp.eyes[s].reflexFound)) tips.push('Corneal reflex not detected in one eye — MRD1 estimated from iris centre. Verify, or re-capture with the light on.');
   el.interp.innerHTML = tips.map(t => `<li>${t}</li>`).join('');
 }
 

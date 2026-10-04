@@ -35,7 +35,8 @@ You can also record the phenylephrine test, Bell's phenomenon, jaw-winking and f
 1. Open the site on the phone over **HTTPS** (the camera needs a secure context).
 2. **Rear camera + torch (recommended):** the examiner holds the phone 25–30 cm away at the patient's eye level, and the patient looks at the torch.
    If the torch is not available (for example on iOS Safari), use a pen-torch held beside the lens, or the front camera with the **Ring light** button, which turns the screen white.
-3. Wait for the checks (distance, level, facing, reflex) to turn green, then press **Capture**.
+3. Keep the forehead, both eyes and the nose in the frame. Wait for the checks (distance, level, facing, reflex) to turn green, then press **Capture**.
+   The app copes with a phone held sideways or upside-down and with tight close-ups. If it still finds no face, press **Capture** anyway: the markers start in default positions for you to drag into place. The two **I** markers go on the nasal and temporal limbus; they set the mm scale.
 4. In **Review**, drag markers to correct them. A loupe magnifies the area while you drag, and the arrow pad nudges the selected marker by about 0.1 mm.
 5. For levator function, open **Down-gaze** and capture, then **Up-gaze** and capture. Fix the brow with your thumb for both.
 6. Copy, share or save the report, or save an annotated image. History is kept only on this phone.

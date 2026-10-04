@@ -271,12 +271,19 @@ export function autoGaze(g, kind) {
 }
 
 // ---------- measurements ----------
+// Iris size from limbus markers when present (manual captures), else from landmarks.
+function irisPx(cap) {
+  if (!cap.eyes.OD.h.limbN) return { diam: cap.irisDiamPx, r: s => cap.eyes[s].irisRpx };
+  const d = s => dist(cap.eyes[s].h.limbN, cap.eyes[s].h.limbT);
+  return { diam: (d('OD') + d('OS')) / 2, r: s => d(s) / 2 };
+}
+
 export function primaryScale(cap, settings) {
   if (settings.calib === 'ruler' && cap.ruler) {
     const d = dist(cap.ruler.a, cap.ruler.b);
     if (d > 2) return { mmpp: settings.rulerMm / d, method: `ruler ${settings.rulerMm} mm` };
   }
-  return { mmpp: settings.hvid / cap.irisDiamPx, method: `HVID ${settings.hvid} mm` };
+  return { mmpp: settings.hvid / irisPx(cap).diam, method: `HVID ${settings.hvid} mm${cap.manual ? ' (limbus markers)' : ''}` };
 }
 
 export function measurePrimary(cap, settings) {
@@ -284,7 +291,8 @@ export function measurePrimary(cap, settings) {
   const F = makeFrame(cap.eyes.OD.h.reflex, cap.eyes.OS.h.reflex, cap.nose);
   const out = { mmpp, method, F, eyes: {} };
   for (const s of EYES) {
-    const { h, flags, irisRpx } = cap.eyes[s];
+    const { h, flags } = cap.eyes[s];
+    const irisRpx = irisPx(cap).r(s);
     const v = p => toUV(F, p).v;
     const mrd1 = (v(h.reflex) - v(h.upper)) * mmpp;
     const mrd2 = (v(h.lower) - v(h.reflex)) * mmpp;
