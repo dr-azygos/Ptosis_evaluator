@@ -3,61 +3,111 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0f1620">
+<meta name="theme-color" content="#180a06">
 <title>Ptosis Evaluator</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="css/style.css?v=11">
+<link rel="stylesheet" href="css/style.css?v=12">
 </head>
 <body>
+<div id="app">
 
 <!-- ============ HOME ============ -->
-<section id="home" class="view active">
+<section id="home" class="view active intro" aria-label="Home">
   <header class="hero">
-    <svg class="logo" viewBox="0 0 64 64" aria-hidden="true"><use href="icon.svg#eye"/></svg>
-    <h1>Ptosis Evaluator</h1>
-    <p>AR eyelid measurement using the corneal light reflex</p>
+    <div class="hero-bar">
+      <button id="btnHelp" class="glass circle" data-liquid aria-label="How to measure">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.2 9.3a2.9 2.9 0 1 1 4.1 2.6c-.8.4-1.3 1-1.3 1.9v.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="17.6" r="1.1" fill="currentColor"/></svg>
+      </button>
+    </div>
+    <!-- The hero is the measurement itself: lid margins, reflex, MRD1 / MRD2. -->
+    <svg class="hero-eye" viewBox="0 0 320 210" role="img" aria-label="An eye with the corneal light reflex and the MRD1 and MRD2 distances marked">
+      <defs>
+        <clipPath id="eyeClip"><path d="M30 112 Q160 22 290 112 Q160 178 30 112 Z"/></clipPath>
+        <radialGradient id="irisFill" cx="50%" cy="45%" r="55%">
+          <stop offset="0" stop-color="#7a4126"/><stop offset=".65" stop-color="#4a2414"/><stop offset="1" stop-color="#25110a"/>
+        </radialGradient>
+        <radialGradient id="glint" cx="50%" cy="50%" r="50%">
+          <stop offset="0" stop-color="#fff8ec"/><stop offset=".45" stop-color="#f0a35a" stop-opacity=".9"/><stop offset="1" stop-color="#f0a35a" stop-opacity="0"/>
+        </radialGradient>
+      </defs>
+      <path class="he-sclera" d="M30 112 Q160 22 290 112 Q160 178 30 112 Z"/>
+      <g clip-path="url(#eyeClip)" class="he-iris">
+        <circle cx="160" cy="112" r="46" fill="url(#irisFill)"/>
+        <circle cx="160" cy="112" r="46" fill="none" stroke="#1a0b06" stroke-width="3"/>
+        <circle cx="160" cy="112" r="17" fill="#0c0503"/>
+      </g>
+      <path class="he-lid he-upper" pathLength="1" d="M30 112 Q160 22 290 112"/>
+      <path class="he-lid he-lower" pathLength="1" d="M30 112 Q160 178 290 112"/>
+      <g class="he-mrd1">
+        <line x1="160" y1="108" x2="160" y2="70"/>
+        <line x1="150" y1="67" x2="170" y2="67"/>
+        <text x="212" y="92">MRD1</text>
+      </g>
+      <g class="he-mrd2">
+        <line x1="160" y1="117" x2="160" y2="141"/>
+        <line x1="150" y1="145" x2="170" y2="145"/>
+        <text x="212" y="134">MRD2</text>
+      </g>
+      <circle class="he-glint" cx="160" cy="112" r="9" fill="url(#glint)"/>
+      <circle class="he-glint-core" cx="160" cy="112" r="2.6" fill="#fffaf2"/>
+    </svg>
   </header>
 
-  <div class="card">
-    <h2>Patient</h2>
+  <div class="identity">
+    <h1>Ptosis Evaluator</h1>
+    <p>Eyelid measurement from the corneal light reflex</p>
+  </div>
+
+  <section class="card new-eval" aria-labelledby="newEvalTitle">
+    <h2 id="newEvalTitle">New evaluation</h2>
     <div class="grid3">
-      <label>ID / Name<input id="pId" autocomplete="off"></label>
-      <label>Age<input id="pAge" inputmode="numeric"></label>
-      <label>Sex<select id="pSex"><option></option><option>M</option><option>F</option><option>Other</option></select></label>
+      <label>Patient ID or name<input id="pId" autocomplete="off" placeholder="Patient ID"></label>
+      <label>Age<input id="pAge" inputmode="numeric" placeholder="Years"></label>
+      <label>Sex<select id="pSex"><option value="">Select</option><option>M</option><option>F</option><option>Other</option></select></label>
     </div>
-  </div>
+    <button id="btnStart" class="primary pill-cta">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="13.6" cy="10.4" r="2" fill="currentColor"/></svg>
+      Start camera
+    </button>
+    <label class="button secondary pill-cta" tabindex="0" role="button" id="lblFileHome">Analyse a saved photo<input id="fileHome" type="file" accept="image/*" hidden></label>
+    <p id="homeMsg" class="msg" role="status"></p>
+    <details class="setup">
+      <summary>Camera and calibration</summary>
+      <div class="grid2">
+        <label>Camera
+          <select id="facing">
+            <option value="environment">Rear camera with torch</option>
+            <option value="user">Front camera</option>
+          </select>
+        </label>
+        <label>Corneal diameter, HVID (mm)
+          <input id="hvid" type="number" step="0.1" min="9" max="14" value="11.7">
+        </label>
+      </div>
+      <p class="hint">The limbus is found automatically in each eye and scaled to this size. Adult mean is 11.7 mm. Enter the measured white-to-white if you know it, or use the forehead ruler in Review for a true mm value.</p>
+    </details>
+  </section>
 
-  <div class="card">
-    <h2>Setup</h2>
-    <div class="grid2">
-      <label>Camera
-        <select id="facing">
-          <option value="environment">Rear camera + torch</option>
-          <option value="user">Front camera (selfie)</option>
-        </select>
-      </label>
-      <label>Corneal diameter (HVID, mm)
-        <input id="hvid" type="number" step="0.1" min="9" max="14" value="11.7">
-      </label>
+  <section class="your-data" aria-labelledby="dataTitle">
+    <h2 id="dataTitle" class="section-label">On this phone</h2>
+    <div class="stat-grid">
+      <button class="stat" data-open="historyCard"><span class="num" id="numSaved">0</span><span class="lbl">evaluations saved</span></button>
+      <button class="stat" data-open="learnCard"><span class="num" id="numLearned">0</span><span class="lbl">eyes learned from</span></button>
+      <button class="stat" data-open="learnCard"><span class="num" id="numValid">0</span><span class="lbl">clinical comparisons</span></button>
     </div>
-    <p class="hint">The limbus (corneal edge) is found automatically in each eye; this value is the mm size it is scaled to. Adult mean 11.7 mm. Enter the measured white-to-white if known, or use the forehead ruler in Review for a true mm measurement.</p>
-    <div class="row">
-      <button id="btnStart" class="primary big">Start camera</button>
-      <label class="button big ghost">Analyse a photo<input id="fileHome" type="file" accept="image/*" hidden></label>
-    </div>
-    <p id="homeMsg" class="msg"></p>
-  </div>
+    <div class="card last-eval" id="lastEval"></div>
+  </section>
 
-  <details class="card">
+  <details class="card fold" id="guideCard">
     <summary>How to measure</summary>
     <ol class="howto">
-      <li>Seat the patient, head upright, brows relaxed. Hold the phone ~25–30 cm away at the patient's eye level.</li>
-      <li>Torch turns on automatically. Ask the patient to look straight at the light — a white reflex dot appears on each cornea.</li>
-      <li>Keep the forehead, both eyes and the nose in the frame — the face finder needs most of the face. If it still can't find one, <b>Capture</b> anyway and drag the markers into place by hand.</li>
-      <li>Line the eyes up inside the AR guide. When all checks are green the app takes the photo by itself (a short burst; it keeps the frame with the eyes most open, so a blink is never measured). Turn <b>Auto</b> off to use the shutter instead.</li>
-      <li>The marking is then done on that photo. Measurements are taken along the axis perpendicular to the inter-pupillary line.</li>
-      <li>In Review, drag any marker to correct it (a loupe appears while dragging; use the arrow pad for fine nudges).</li>
+      <li>Seat the patient, head upright, brows relaxed. Hold the phone 25 to 30 cm away at the patient's eye level.</li>
+      <li>The torch turns on automatically. Ask the patient to look straight at the light. A white reflex dot appears on each cornea.</li>
+      <li>Keep the forehead, both eyes and the nose in the frame: the face finder needs most of the face. If it still can't find one, press the shutter anyway and drag the markers into place by hand.</li>
+      <li>Line the eyes up inside the guide. When all checks are green the app takes the photo by itself. It takes a short burst and keeps the frame with the eyes most open, so a blink is never measured. Turn <b>Auto</b> off to use the shutter instead.</li>
+      <li>The marking is then done on that photo. Distances are measured perpendicular to the line between the pupils.</li>
+      <li>In Review, pinch to zoom and drag any marker to correct it. A loupe appears while dragging; the arrow pad nudges by about 0.1 mm.</li>
       <li>For levator function, capture <b>Down-gaze</b> and <b>Up-gaze</b> while you fix the brow with your thumb.</li>
     </ol>
     <dl class="legend">
@@ -66,74 +116,91 @@
       <dt class="c-lower">L</dt><dd>Lower lid margin (MRD2)</dd>
       <dt class="c-crease">C</dt><dd>Upper lid crease (MCD)</dd>
       <dt class="c-brow">B</dt><dd>Lower brow margin</dd>
-      <dt class="c-canthus">M/T</dt><dd>Medial / lateral canthus (PFW)</dd>
+      <dt class="c-canthus">M / T</dt><dd>Medial and lateral canthus (PFW)</dd>
+      <dt class="c-limbus">I</dt><dd>Nasal and temporal limbus (scale)</dd>
     </dl>
   </details>
 
-  <details class="card" id="learnCard">
-    <summary>Accuracy &amp; learning</summary>
+  <details class="card fold" id="learnCard">
+    <summary>Accuracy and learning</summary>
     <div id="learnSummary"></div>
     <label class="check"><input type="checkbox" id="learnOn" checked> Apply learned corrections to new captures</label>
     <h3 class="sub">Agreement with clinical measurements</h3>
     <div id="validSummary"></div>
     <div class="row">
-      <button id="btnExportCsv">Export CSV</button>
+      <button id="btnExportCsv" class="secondary">Export CSV</button>
       <button id="btnResetLearn" class="ghost">Reset learning</button>
       <button id="btnResetValid" class="ghost">Clear validation data</button>
     </div>
-    <p class="hint">Learning: every time you save, the app records how far you moved its U, L, C and I markers. After 5 eyes it starts correcting new captures by the typical amount. Validation: enter your ruler / slit-lamp values in Review before saving. All data stays on this phone.</p>
+    <p class="hint">Learning: each time you save, the app records how far you moved its U, L, C and I markers. After 5 eyes it corrects new captures by the typical amount. Validation: enter your ruler or slit-lamp values in Review before saving. All data stays on this phone.</p>
   </details>
 
-  <details class="card" id="historyCard">
-    <summary>Saved evaluations (<span id="histCount">0</span>)</summary>
+  <details class="card fold" id="historyCard">
+    <summary><span>Saved evaluations (<span id="histCount">0</span>)</span></summary>
     <div id="historyList"></div>
   </details>
 
-  <p class="disclaimer">Decision-support tool for trained clinicians. Measurements depend on camera position, fixation and calibration; verify clinically with a ruler before surgical planning.<br><span id="build">Build 11</span></p>
+  <p class="disclaimer">Decision support for trained clinicians. Results depend on camera position, fixation and calibration, so confirm with a ruler before surgical planning.<br><span id="build">Build 12</span></p>
 </section>
 
 <!-- ============ LIVE ============ -->
-<section id="live" class="view">
+<section id="live" class="view" aria-label="Camera">
   <div class="stage-wrap" id="liveWrap">
     <video id="video" playsinline muted></video>
-    <canvas id="liveCanvas"></canvas>
+    <canvas id="liveCanvas" aria-label="Camera preview with alignment guide"></canvas>
     <div class="topbar">
-      <button id="btnBack" class="icon" aria-label="Back">←</button>
-      <div id="checks" class="checks"></div>
-      <button id="btnLiveZoom" class="pill" aria-label="Camera zoom">1×</button>
-      <button id="btnToReview" class="pill pill-tight">Review</button>
+      <button id="btnBack" class="glass circle" data-liquid aria-label="Back to home">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 5.5 8 12l6.5 6.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div id="checks" class="checks" role="status" aria-live="polite"></div>
+      <button id="btnLiveZoom" class="glass circle" data-liquid aria-label="Camera zoom">1×</button>
+      <button id="btnToReview" class="glass circle wide" data-liquid>Review</button>
     </div>
-    <div id="loading" class="loading">Loading face model…</div>
-    <div id="instruction" class="instruction"></div>
-  </div>
+    <div id="loading" class="loading" role="status"><span class="pupil" aria-hidden="true"></span><span class="loading-text">Loading face model…</span></div>
 
-  <div class="live-panel">
-    <table class="readout" id="liveTable"></table>
-    <div class="seg" id="stageSeg" role="tablist">
-      <button data-stage="primary" class="on">Primary</button>
-      <button data-stage="down">Down-gaze</button>
-      <button data-stage="up">Up-gaze</button>
-    </div>
-    <div class="controls">
-      <button id="btnTorch" class="tool" aria-pressed="false">Torch</button>
-      <button id="btnRing" class="tool" aria-pressed="false">Light</button>
-      <button id="btnCapture" class="capture" aria-label="Capture" disabled></button>
-      <button id="btnAuto" class="tool" aria-pressed="true">Auto</button>
-      <button id="btnFlip" class="tool">Flip</button>
+    <div class="live-panel">
+      <div id="instruction" class="instruction" role="status"></div>
+      <table class="readout" id="liveTable"></table>
+      <div class="seg" id="stageSeg" role="group" aria-label="Gaze">
+        <button data-stage="primary" class="on">Primary</button>
+        <button data-stage="down">Down-gaze</button>
+        <button data-stage="up">Up-gaze</button>
+      </div>
+      <div class="controls">
+        <button id="btnTorch" class="tool" aria-pressed="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3h8l-1.5 5v12a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1V8L8 3Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M12 12v3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+          <span>Torch</span>
+        </button>
+        <button id="btnRing" class="tool" aria-pressed="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="4" fill="none" stroke="currentColor" stroke-width="3"/></svg>
+          <span>Screen light</span>
+        </button>
+        <button id="btnCapture" class="capture" aria-label="Take photo" disabled><span class="capture-glint" aria-hidden="true"></span></button>
+        <button id="btnAuto" class="tool" aria-pressed="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="13" r="7.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 9v4l2.6 1.6M10 3h4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+          <span>Auto</span>
+        </button>
+        <button id="btnFlip" class="tool">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 0 1 13.7-5.6M20 12a8 8 0 0 1-13.7 5.6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M18 3v4h-4M6 21v-4h4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>Flip</span>
+        </button>
+      </div>
     </div>
   </div>
 </section>
 
 <!-- ============ REVIEW ============ -->
-<section id="review" class="view">
+<section id="review" class="view" aria-label="Review">
   <div class="review-top">
-    <button id="btnReviewBack" class="icon" aria-label="Back to camera">←</button>
-    <div class="seg small" id="capSeg">
+    <button id="btnReviewBack" class="icon-btn" aria-label="Back to camera">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 5.5 8 12l6.5 6.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <div class="seg small" id="capSeg" role="group" aria-label="Capture">
       <button data-cap="primary" class="on">Primary</button>
       <button data-cap="down">Down</button>
       <button data-cap="up">Up</button>
     </div>
-    <div class="seg small" id="viewSeg">
+    <div class="seg small" id="viewSeg" role="group" aria-label="View">
       <button data-v="both" class="on">Both</button>
       <button data-v="OD">OD</button>
       <button data-v="OS">OS</button>
@@ -142,90 +209,91 @@
   </div>
 
   <div class="stage-wrap editor" id="editWrap">
-    <canvas id="editCanvas"></canvas>
+    <canvas id="editCanvas" aria-label="Captured photo with measurement markers"></canvas>
     <div id="editEmpty" class="empty">
-      <p>No capture for this gaze yet.</p>
+      <p>No photo for this gaze yet.</p>
       <div class="row">
         <button id="btnCaptureThis" class="primary">Open camera</button>
-        <label class="button ghost">Upload photo<input id="fileReview" type="file" accept="image/*" hidden></label>
+        <label class="button secondary" tabindex="0" role="button" id="lblFileReview">Upload photo<input id="fileReview" type="file" accept="image/*" hidden></label>
       </div>
     </div>
     <div class="zoombar" id="zoombar">
-      <button data-z="in" aria-label="Zoom in">+</button>
-      <button data-z="out" aria-label="Zoom out">−</button>
-      <button data-z="reset" aria-label="Reset zoom">1×</button>
+      <button class="glass circle sq" data-liquid data-z="in" aria-label="Zoom in">+</button>
+      <button class="glass circle sq" data-liquid data-z="out" aria-label="Zoom out">−</button>
+      <button class="glass circle sq" data-liquid data-z="reset" aria-label="Reset zoom">1×</button>
     </div>
-    <div class="nudge" id="nudge" hidden>
+    <div class="nudge glass" id="nudge" hidden>
       <span id="nudgeLabel"></span>
-      <button data-d="0,-1">↑</button>
-      <div><button data-d="-1,0">←</button><button data-d="1,0">→</button></div>
-      <button data-d="0,1">↓</button>
+      <button data-d="0,-1" aria-label="Nudge up">↑</button>
+      <div><button data-d="-1,0" aria-label="Nudge left">←</button><button data-d="1,0" aria-label="Nudge right">→</button></div>
+      <button data-d="0,1" aria-label="Nudge down">↓</button>
     </div>
   </div>
 
   <div class="review-body">
-    <p class="hint">Pinch or use + / − to zoom the photo, drag empty space to pan. Drag markers to correct them; tap one to select it and nudge with the arrows.</p>
+    <p class="hint">Pinch or use + and − to zoom, drag empty space to pan. Drag a marker to correct it, or tap it and nudge with the arrows.</p>
 
-    <div class="card">
-      <h2>Results</h2>
+    <section class="card results-card" aria-labelledby="resTitle">
+      <h2 id="resTitle">Results</h2>
       <table class="results" id="resultsTable"></table>
       <p id="calibInfo" class="hint"></p>
-    </div>
+    </section>
 
-    <div class="card">
-      <h2>Clinical measurements (ruler / slit-lamp)</h2>
-      <p class="hint">Optional. Enter your own measurements to track the app's accuracy. Saved with the evaluation.</p>
+    <section class="card" aria-labelledby="interpTitle">
+      <h2 id="interpTitle">Interpretation</h2>
+      <ul id="interp" class="interp"></ul>
+    </section>
+
+    <details class="card fold" open>
+      <summary>Clinical measurements (ruler or slit-lamp)</summary>
+      <p class="hint">Optional. Your own values let the app track its accuracy. They are saved with the evaluation.</p>
       <table class="results refgrid" id="refGrid"></table>
-    </div>
+    </details>
 
-    <div class="card">
-      <h2>Calibration</h2>
-      <div class="grid3">
-        <label>Method
-          <select id="calib">
-            <option value="hvid">Corneal diameter (HVID)</option>
-            <option value="ruler">Ruler / sticker on forehead</option>
-          </select>
-        </label>
-        <label>HVID (mm)<input id="hvid2" type="number" step="0.1" min="9" max="14"></label>
-        <label>Ruler length (mm)<input id="rulerMm" type="number" step="0.5" min="1" value="10"></label>
-      </div>
-      <label>Normal MRD1 reference (mm)<input id="normalMrd1" type="number" step="0.5" value="4.5"></label>
-    </div>
-
-    <div class="card">
-      <h2>Clinical tests</h2>
+    <details class="card fold">
+      <summary>Clinical tests</summary>
       <div class="grid2">
         <label>Phenylephrine 2.5% test
-          <select id="phenyl"><option value="">Not done</option><option value="positive">Positive (lid elevates ≥ 1.5 mm)</option><option value="negative">Negative</option></select>
+          <select id="phenyl"><option value="">Not done</option><option value="positive">Positive (lid rises 1.5 mm or more)</option><option value="negative">Negative</option></select>
         </label>
         <label>Bell's phenomenon
           <select id="bells"><option value="">Not recorded</option><option value="good">Good</option><option value="poor">Poor</option><option value="absent">Absent</option></select>
         </label>
       </div>
       <label class="check"><input type="checkbox" id="jawwink"> Jaw-winking (Marcus Gunn)</label>
-      <label class="check"><input type="checkbox" id="fatigue"> Fatigability / variable ptosis</label>
+      <label class="check"><input type="checkbox" id="fatigue"> Fatigability or variable ptosis</label>
       <label>Notes<textarea id="notes" rows="2"></textarea></label>
-    </div>
+    </details>
 
-    <div class="card">
-      <h2>Interpretation</h2>
-      <ul id="interp" class="interp"></ul>
-    </div>
+    <details class="card fold">
+      <summary>Calibration</summary>
+      <div class="grid3">
+        <label>Method
+          <select id="calib">
+            <option value="hvid">Corneal diameter (HVID)</option>
+            <option value="ruler">Ruler or sticker on forehead</option>
+          </select>
+        </label>
+        <label>HVID (mm)<input id="hvid2" type="number" step="0.1" min="9" max="14"></label>
+        <label>Ruler (mm)<input id="rulerMm" type="number" step="0.5" min="1" value="10"></label>
+      </div>
+      <label>Normal MRD1 reference (mm)<input id="normalMrd1" type="number" step="0.5" value="4.5"></label>
+    </details>
 
+    <button id="btnSave" class="primary pill-cta">Save &amp; learn</button>
+    <p id="reviewMsg" class="msg" role="status"></p>
     <div class="actions">
+      <button id="btnCopy" class="secondary">Copy report</button>
+      <button id="btnShare" class="secondary">Share</button>
+      <button id="btnImage" class="secondary">Save image</button>
       <button id="btnRetake" class="ghost">Retake this gaze</button>
-      <button id="btnCopy">Copy report</button>
-      <button id="btnShare">Share</button>
-      <button id="btnImage">Save image</button>
-      <button id="btnSave" class="primary">Save &amp; learn</button>
       <button id="btnNew" class="ghost">New patient</button>
     </div>
-    <p id="reviewMsg" class="msg"></p>
-    <p class="disclaimer">Decision-support tool for trained clinicians. Verify clinically before surgical planning.</p>
+    <p class="disclaimer">Decision support for trained clinicians. Confirm clinically before surgical planning.</p>
   </div>
 </section>
 
-<script type="module" src="js/app.js?v=11"></script>
+</div>
+<script type="module" src="js/app.js?v=12"></script>
 </body>
 </html>

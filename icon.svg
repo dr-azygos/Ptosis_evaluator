@@ -1,11 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <g id="eye">
-    <rect width="64" height="64" rx="14" fill="#0f1620"/>
-    <path d="M6 34 Q32 10 58 34 Q32 54 6 34 Z" fill="#e8eef5"/>
-    <circle cx="32" cy="34" r="11" fill="#2a6f9e"/>
-    <circle cx="32" cy="34" r="5" fill="#0b0f14"/>
-    <circle cx="34.5" cy="31.5" r="2" fill="#ffe14d"/>
-    <path d="M6 30 Q32 14 58 30" fill="none" stroke="#35d0ff" stroke-width="3" stroke-linecap="round"/>
-    <path d="M32 34 V20" stroke="#35d0ff" stroke-width="2" stroke-dasharray="2 2"/>
+    <rect width="64" height="64" rx="14" fill="#180a06"/>
+    <path d="M7 34 Q32 13 57 34 Q32 50 7 34 Z" fill="#efe3d3"/>
+    <circle cx="32" cy="34" r="11" fill="#5a2c17"/>
+    <circle cx="32" cy="34" r="4.5" fill="#0c0503"/>
+    <path d="M7 34 Q32 13 57 34" fill="none" stroke="#2a120a" stroke-width="2.6" stroke-linecap="round"/>
+    <circle cx="32" cy="34" r="2" fill="#f0a35a"/>
   </g>
 </svg>

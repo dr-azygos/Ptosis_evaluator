@@ -1,11 +1,12 @@
 import {
   EYES, dist, mid, makeFrame, toUV, fromUV, polyAt, extractGeometry, Sampler,
   autoPrimary, autoGaze, measurePrimary, measureGaze, ptosisGrade, lfGrade, suggestions,
-} from './analysis.js?v=11';
+} from './analysis.js?v=12';
 import {
   PARAMS, MIN_SAMPLES, learnedBias, applyLearned, recordCorrections, recordValidation, loadSamples,
   loadValidation, validationStats, validationCSV, blandAltmanSVG, resetLearning, resetValidation, describeLearned,
-} from './learn.js?v=11';
+} from './learn.js?v=12';
+import { initLiquidGlass, refreshLiquidGlass } from './glass.js?v=12';
 
 const MP_VERSION = '0.10.14';
 const MP_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}`;
@@ -15,7 +16,7 @@ const AUTO_MS = 1200; // aligned this long → automatic photo
 const STAGE_TEXT = {
   primary: 'Patient looks straight at the light, brows relaxed.',
   down: 'Patient looks fully DOWN. Fix the brow with your thumb.',
-  up: 'Patient looks fully UP. Keep the brow fixed — no frontalis.',
+  up: 'Patient looks fully UP. Keep the brow fixed (no frontalis).',
 };
 const COLORS = {
   reflex: '#ffe14d', upper: '#35d0ff', lower: '#7dff6b', crease: '#ff5ce1',
@@ -30,7 +31,7 @@ const HANDLE_NAME = {
 const $ = id => document.getElementById(id);
 const el = {
   video: $('video'), liveCanvas: $('liveCanvas'), editCanvas: $('editCanvas'),
-  checks: $('checks'), loading: $('loading'), instruction: $('instruction'), liveTable: $('liveTable'),
+  checks: $('checks'), loading: $('loading'), loadingText: document.querySelector('#loading .loading-text'), instruction: $('instruction'), liveTable: $('liveTable'),
   results: $('resultsTable'), interp: $('interp'), calibInfo: $('calibInfo'),
 };
 
@@ -52,9 +53,20 @@ const S = {
 const sampler = new Sampler();
 const saveSettings = () => store.set('ptosis.settings', S.settings);
 
+// Screen change: the new screen rises 12px and fades in, for continuity
+// between set-up, capture and review. The home intro plays only once.
 function show(id) {
-  document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === id));
-  window.scrollTo(0, 0);
+  document.querySelectorAll('.view').forEach(v => {
+    const on = v.id === id;
+    if (on && !v.classList.contains('active')) {
+      v.classList.add('active', 'enter');
+      v.addEventListener('animationend', () => v.classList.remove('enter'), { once: true });
+    } else if (!on) v.classList.remove('active', 'enter', 'intro');
+  });
+  const v = $(id);
+  if (v) v.scrollTop = 0;
+  if (id === 'home') renderHome();
+  requestAnimationFrame(refreshLiquidGlass);
 }
 
 // ---------------- face landmarker ----------------
@@ -103,7 +115,7 @@ async function startCamera() {
   S.zoomCaps = caps.zoom && caps.zoom.max > caps.zoom.min ? caps.zoom : null;
   S.live.zf = 1;
   $('btnTorch').disabled = !torchOk;
-  $('btnTorch').title = torchOk ? '' : 'Torch not available on this camera/browser — use Ring light or a pen-torch beside the lens';
+  $('btnTorch').title = torchOk ? '' : 'Torch not available on this camera or browser. Use Light, or a pen-torch beside the lens.';
   S.torch = false;
   if (torchOk && facing === 'environment') await setTorch(true);
   setRing(facing === 'user' && !torchOk);
@@ -183,12 +195,12 @@ function label(ctx, text, p, color, u, align) {
   ctx.textAlign = align; ctx.textBaseline = 'middle';
   const w = ctx.measureText(text).width, h = 16 * u, pad = 4 * u;
   const x0 = align === 'left' ? p.x : align === 'right' ? p.x - w : p.x - w / 2;
-  ctx.fillStyle = 'rgba(10,14,20,.72)';
+  ctx.fillStyle = 'rgba(24,10,6,.74)';
   ctx.fillRect(x0 - pad, p.y - h / 2, w + 2 * pad, h);
   ctx.fillStyle = color; ctx.fillText(text, p.x, p.y);
   ctx.restore();
 }
-const f1 = v => (v == null || Number.isNaN(v) ? '—' : (Math.abs(v) < 0.05 ? 0 : v).toFixed(1));
+const f1 = v => (v == null || Number.isNaN(v) ? '–' : (Math.abs(v) < 0.05 ? 0 : v).toFixed(1));
 
 // Overlay for a primary-gaze capture (live or review).
 function drawPrimaryOverlay(ctx, T, cap, m, u) {
@@ -289,7 +301,7 @@ function measureCap(cap) {
 }
 // Live view: alignment guide only. Measurements are made on the captured photo.
 function drawGuide(ctx, T, cap, g, u, ok) {
-  const col = ok ? '#3ddc84' : '#ffb547';
+  const col = ok ? '#8fdca5' : '#f3c46e';
   const pts = EYES.map(s => T.toS(cap.eyes[s].h.reflex || cap.eyes[s].irisC));
   line(ctx, pts[0], pts[1], col, 1.5 * u, [6 * u, 5 * u]);
   for (const s of EYES) {
@@ -487,7 +499,7 @@ function updateLivePanel() {
     ok = d >= 25 && roll < 6 && Math.abs(yaw) < 0.1;
     if (S.stage === 'primary') {
       const n = EYES.filter(s => cap.eyes[s].flags.reflex).length;
-      chips.push(n === 2 ? chip('Reflex ✓', 'ok') : chip(n ? 'Reflex: 1 eye' : 'No reflex — light on?', n ? 'warn' : 'bad'));
+      chips.push(n === 2 ? chip('Reflex ✓', 'ok') : chip(n ? 'Reflex: 1 eye' : 'No reflex: light on?', n ? 'warn' : 'bad'));
     }
   }
   el.checks.innerHTML = chips.join('');
@@ -500,10 +512,10 @@ function updateLivePanel() {
   if (!ok || S.live.busy) S.live.okSince = null;
   else if (!S.live.okSince) S.live.okSince = now;
   let msg;
-  if (S.live.busy) msg = 'Taking photo — hold still…';
+  if (S.live.busy) msg = 'Taking photo, hold still…';
   else if (!cap) msg = 'Find the face: forehead, both eyes and nose in view.';
   else if (!ok) msg = 'Line up: eyes level, face straight to the camera' + (S.stage === 'primary' ? ', patient looking at the light.' : '.');
-  else if (S.auto) msg = 'Hold still — taking the photo…';
+  else if (S.auto) msg = 'Hold still, taking the photo…';
   else msg = 'Aligned. Tap the shutter to take the photo.';
   el.liveTable.innerHTML = `<tbody><tr><td class="guide">${msg}</td></tr></tbody>`;
   if (S.auto && S.live.okSince && now - S.live.okSince >= AUTO_MS) captureLive();
@@ -513,16 +525,16 @@ async function goLive(stage) {
   if (stage) setStage(stage);
   show('live');
   el.loading.hidden = false;
-  el.loading.textContent = 'Starting camera…';
+  el.loadingText.textContent = 'Starting camera…';
   try {
     if (!window.isSecureContext) throw new Error('Camera needs HTTPS (or localhost).');
     if (!S.stream) await startCamera();
-    el.loading.textContent = 'Loading face model…';
+    el.loadingText.textContent = 'Loading face model…';
     await setMode('VIDEO');
     el.loading.hidden = true;
     if (!S.live.running) { S.live.running = true; S.live.cap = null; S.live.view = null; S.live.src = null; S.live.miss = 0; S.live.cfg = { q: 0, pad: 1 }; requestAnimationFrame(liveLoop); }
   } catch (e) {
-    el.loading.textContent = `⚠ ${e.message || e}`;
+    el.loadingText.textContent = `⚠ ${e.message || e}`;
   }
 }
 function stopLive() { S.live.running = false; stopCamera(); setRing(false); }
@@ -623,6 +635,8 @@ async function captureLive() {
   const v = el.video;
   if (!v.videoWidth || S.live.busy) return;
   S.live.busy = true; S.live.okSince = null;
+  const shutter = $('btnCapture');
+  shutter.classList.remove('shoot'); void shutter.offsetWidth; shutter.classList.add('shoot');
   const vw = v.videoWidth, vh = v.videoHeight;
   const flash = document.createElement('div');
   flash.style.cssText = 'position:fixed;inset:0;background:#fff;opacity:.6;pointer-events:none;transition:opacity .25s';
@@ -643,7 +657,7 @@ async function captureLive() {
       if (S.stage !== 'primary' && lms) break;
     }
     S.live.running = false;
-    el.loading.hidden = false; el.loading.textContent = 'Marking the photo…';
+    el.loading.hidden = false; el.loadingText.textContent = 'Marking the photo…';
     await new Promise(r => setTimeout(r, 30));
     const cap = await captureFromSource(best, vw, vh, S.stage, true);
     S.caps[S.stage] = cap;
@@ -726,7 +740,7 @@ function fitEditorHeight(cap) {
     const b = S.rv.view === 'both' ? bbox(pts, 0.22, 0.15) : bbox(pts, 0.45, 0.2);
     aspect = b.h / b.w;
   }
-  const h = Math.max(220, Math.min(window.innerHeight * 0.5, w * aspect));
+  const h = Math.max(220, Math.min($('app').clientHeight * 0.5, w * aspect));
   wrap.style.height = `${Math.round(h)}px`;
 }
 
@@ -963,7 +977,7 @@ function renderResults() {
   };
   let html = '<thead><tr><th>mm</th><th>OD (R)</th><th>OS (L)</th></tr></thead><tbody>';
   for (const r of rows) html += `<tr><td>${r.name}<small>${r.sub}</small></td>${cell(r, 'OD')}${cell(r, 'OS')}</tr>`;
-  const gc = s => { const g = grade(s); return g ? `<td class="sev${g.level}">${g.label}<small>${g.level ? `≈ ${g.amount.toFixed(1)} mm` : ''}</small></td>` : '<td>—</td>'; };
+  const gc = s => { const g = grade(s); return g ? `<td class="sev${g.level}">${g.label}<small>${g.level ? `≈ ${g.amount.toFixed(1)} mm` : ''}</small></td>` : '<td>–</td>'; };
   html += `<tr><td>Grade<small>vs normal MRD1 ${S.settings.normalMrd1} mm</small></td>${gc('OD')}${gc('OS')}</tr>`;
   if (mp) html += `<tr><td>MRD1 asymmetry</td><td colspan="2">${Math.abs(mp.eyes.OD.mrd1 - mp.eyes.OS.mrd1).toFixed(1)} mm</td></tr>`;
   el.results.innerHTML = html + '</tbody>';
@@ -976,9 +990,9 @@ function renderResults() {
 
   const tips = suggestions(mp, lf, S.clinical, S.settings.normalMrd1);
   if (!mp) tips.unshift('Capture primary gaze to grade ptosis.');
-  if (mp && !lf) tips.push('Levator function not yet measured — capture Down-gaze and Up-gaze.');
-  if (Object.values(S.caps).some(c => c && c.manual)) tips.unshift('Face not detected automatically — markers were placed at default positions. Drag every marker onto the eye, including the two I markers onto the nasal and temporal limbus (they set the mm scale).');
-  if (mp && !S.caps.primary.manual && EYES.some(s => !mp.eyes[s].reflexFound)) tips.push('Corneal reflex not detected in one eye — MRD1 estimated from iris centre. Verify, or re-capture with the light on.');
+  if (mp && !lf) tips.push('Levator function not yet measured. Capture Down-gaze and Up-gaze.');
+  if (Object.values(S.caps).some(c => c && c.manual)) tips.unshift('Face not detected automatically, so markers were placed at default positions. Drag every marker onto the eye, including the two I markers onto the nasal and temporal limbus (they set the mm scale).');
+  if (mp && !S.caps.primary.manual && EYES.some(s => !mp.eyes[s].reflexFound)) tips.push('Corneal reflex not detected in one eye, so MRD1 is estimated from iris centre. Verify, or re-capture with the light on.');
   el.interp.innerHTML = tips.map(t => `<li>${t}</li>`).join('');
 }
 
@@ -1013,17 +1027,18 @@ function renderLearning() {
   $('learnSummary').innerHTML = `<p class="hint" style="margin-top:0">Learned from <b>${b.eyes}</b> eye${b.eyes === 1 ? '' : 's'}.
     Upper lid ${fmt(b.upper)} · Lower lid ${fmt(b.lower)} · Crease ${fmt(b.crease)} ·
     Limbus ${b.limbus.n >= MIN_SAMPLES ? `×${b.limbus.scale.toFixed(3)}` : `${b.limbus.n}/${MIN_SAMPLES} eyes`}
-    <br>(+ = examiners move the marker down; applied ${S.settings.learn ? 'to new captures' : '— switched off'})</p>`;
+    <br>(+ = examiners move the marker down; applied ${S.settings.learn ? 'to new captures' : '(switched off)'})</p>`;
   $('learnOn').checked = S.settings.learn;
   const st = validationStats();
   const rows = PARAMS.filter(([k]) => st[k].n).map(([k, n]) => {
     const x = st[k];
-    return `<tr><td>${n}</td><td>${x.n}</td><td>${x.bias.toFixed(2)}</td><td>${x.n > 1 ? `${x.lo.toFixed(1)} to ${x.hi.toFixed(1)}` : '—'}</td><td>${x.mae.toFixed(2)}</td><td>${Math.round(x.within1 * 100)}%</td></tr>`;
+    return `<tr><td>${n}</td><td>${x.n}</td><td>${x.bias.toFixed(2)}</td><td>${x.n > 1 ? `${x.lo.toFixed(1)} to ${x.hi.toFixed(1)}` : '–'}</td><td>${x.mae.toFixed(2)}</td><td>${Math.round(x.within1 * 100)}%</td></tr>`;
   }).join('');
   $('validSummary').innerHTML = rows
     ? `<table class="stats"><thead><tr><th>mm</th><th>n</th><th>Bias</th><th>95% LoA</th><th>MAE</th><th>±1 mm</th></tr></thead><tbody>${rows}</tbody></table>
        ${blandAltmanSVG(st.mrd1, 'MRD1')}<p class="hint">Bias = mean (app − clinical); LoA = bias ± 1.96 SD; MAE = mean absolute error. Plot: MRD1, both eyes pooled.</p>`
-    : '<p class="hint">No clinical comparisons yet.</p>';
+    : '<p class="hint">No clinical comparisons yet. Enter your ruler or slit-lamp values in Review, then save.</p>';
+  if ($('numSaved')) renderHome();
 }
 
 function reportText() {
@@ -1033,7 +1048,7 @@ function reportText() {
   const pad = (s, n) => String(s).padEnd(n);
   const L = [];
   L.push('PTOSIS EVALUATION');
-  L.push(`Patient: ${p.id || '—'}${p.age ? `, ${p.age} y` : ''}${p.sex ? `, ${p.sex}` : ''}`);
+  L.push(`Patient: ${p.id || '–'}${p.age ? `, ${p.age} y` : ''}${p.sex ? `, ${p.sex}` : ''}`);
   L.push(`Date: ${new Date().toLocaleString()}`);
   if (mp) L.push(`Calibration: ${mp.method}`);
   L.push('');
@@ -1075,14 +1090,14 @@ async function annotatedImage() {
   const c = document.createElement('canvas');
   c.width = cw; c.height = ch + head;
   const ctx = c.getContext('2d');
-  ctx.fillStyle = '#0f1620'; ctx.fillRect(0, 0, c.width, c.height);
+  ctx.fillStyle = '#180a06'; ctx.fillRect(0, 0, c.width, c.height);
   ctx.save(); ctx.translate(0, head);
   const T = makeT(box, cw, ch, false);
   drawImageView(ctx, cap.canvas, cap.W, cap.H, T);
   drawOverlay(ctx, T, cap, m, 2);
   ctx.restore();
   ctx.fillStyle = '#e8eef5'; ctx.font = '600 34px system-ui, sans-serif';
-  ctx.fillText(`Ptosis evaluation — ${$('pId').value.trim() || 'patient'} — ${new Date().toLocaleDateString()}`, 24, 48);
+  ctx.fillText(`Ptosis evaluation · ${$('pId').value.trim() || 'patient'} · ${new Date().toLocaleDateString()}`, 24, 48);
   ctx.font = '26px system-ui, sans-serif'; ctx.fillStyle = '#93a4b8';
   if (cap.kind === 'primary') {
     const e = m.eyes;
@@ -1100,8 +1115,36 @@ function renderHistory() {
       <div class="hist-head"><b>${escapeHtml(h.id || 'Unnamed')}</b><span class="hint">${new Date(h.t).toLocaleString()}</span>
       <span><button data-copy="${i}">Copy</button> <button data-del="${i}">Delete</button></span></div>
       <pre>${escapeHtml(h.text)}</pre>
-    </div>`).join('') : '<p class="hint">Nothing saved yet. Saved reports stay on this device only.</p>';
+    </div>`).join('') : '<p class="hint">Nothing saved yet. Press Save &amp; learn in Review to keep a report here (this phone only).</p>';
+  if ($('numSaved')) renderHome();
 }
+// Home: counts and the last evaluation, read from this phone's storage.
+function renderHome() {
+  const hist = store.get('ptosis.history', []);
+  $('numSaved').textContent = hist.length;
+  $('numLearned').textContent = loadSamples().length;
+  $('numValid').textContent = loadValidation().length;
+  const last = hist[0];
+  const mark = `<svg class="le-mark" viewBox="0 0 56 56" aria-hidden="true"><circle cx="28" cy="28" r="27" fill="rgba(255,255,255,.06)"/><circle cx="28" cy="28" r="13" fill="none" stroke="#ede4d8" stroke-opacity=".7" stroke-width="2"/><circle cx="31" cy="25" r="2.6" fill="#f0a35a"/></svg>`;
+  if (!last) {
+    $('lastEval').innerHTML = `${mark}<div class="le-text"><div class="le-k">Last evaluation</div><div class="le-v">None saved yet</div><div class="le-s">Save a patient from Review and it appears here.</div></div>`;
+    return;
+  }
+  const sm = last.summary;
+  const line = sm ? `OD MRD1 ${f1(sm.OD.mrd1)} · OS MRD1 ${f1(sm.OS.mrd1)} mm` : 'Saved report';
+  const grade = sm ? (sm.OD.grade === sm.OS.grade ? sm.OD.grade : `OD ${sm.OD.grade}, OS ${sm.OS.grade}`) : '';
+  $('lastEval').innerHTML = `${mark}<div class="le-text"><div class="le-k">Last evaluation · ${new Date(last.t).toLocaleDateString()}</div>
+    <div class="le-v">${escapeHtml(last.id || 'Unnamed patient')}</div><div class="le-s">${line}${grade ? `<br>${escapeHtml(grade)}` : ''}</div></div>
+    <button class="icon-btn" id="btnOpenLast" aria-label="Open saved evaluations"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 5.5 16 12l-6.5 6.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`;
+  $('btnOpenLast').addEventListener('click', () => openFold('historyCard'));
+}
+
+function openFold(id) {
+  const d = $(id);
+  d.open = true;
+  d.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+}
+
 function escapeHtml(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
 // ---------------- wiring ----------------
@@ -1204,7 +1247,7 @@ function init() {
       const file = blob && new File([blob], 'ptosis.jpg', { type: 'image/jpeg' });
       if (file && navigator.canShare && navigator.canShare({ files: [file] })) await navigator.share({ title: 'Ptosis evaluation', text, files: [file] });
       else if (navigator.share) await navigator.share({ title: 'Ptosis evaluation', text });
-      else { await navigator.clipboard.writeText(text); msg('Sharing not supported — report copied instead.'); }
+      else { await navigator.clipboard.writeText(text); msg('Sharing is not supported here, so the report was copied instead.'); }
     } catch (e) { if (e.name !== 'AbortError') msg(`Share failed: ${e.message}`); }
   });
   $('btnImage').addEventListener('click', async () => {
@@ -1220,12 +1263,14 @@ function init() {
     if (!S.caps.primary) { msg('Capture primary gaze first.'); return; }
     const cap = S.caps.primary, id = $('pId').value.trim();
     const list = store.get('ptosis.history', []).filter(h => h.cap !== cap.time);
-    list.unshift({ t: Date.now(), id, cap: cap.time, text: reportText() });
+    const mp = computeAll().mp;
+    const summary = mp ? Object.fromEntries(EYES.map(s => [s, { mrd1: mp.eyes[s].mrd1, grade: ptosisGrade(mp.eyes[s].mrd1, S.settings.normalMrd1, mp.eyes[s === 'OD' ? 'OS' : 'OD'].mrd1).label }])) : null;
+    list.unshift({ t: Date.now(), id, cap: cap.time, text: reportText(), summary });
     store.set('ptosis.history', list.slice(0, 100));
     const learned = recordCorrections(cap, measureForLearning);
     const ref = readRef();
     if (ref) recordValidation({ cap: cap.time, t: Date.now(), id, app: appValues(), ref, learned: cap.learned });
-    renderHistory(); renderLearning();
+    renderHistory(); renderLearning(); renderHome();
     const n = loadSamples().length;
     msg(`Saved.${learned ? ` Learned from ${learned} eyes (${n} total${n < MIN_SAMPLES ? `; corrections start at ${MIN_SAMPLES}` : ''}).` : ''}${ref ? ' Clinical values recorded.' : ''}`);
   });
@@ -1258,6 +1303,14 @@ function init() {
 
   buildRefGrid();
   renderLearning();
+  renderHome();
+  initLiquidGlass();
+  $('btnHelp').addEventListener('click', () => openFold('guideCard'));
+  document.querySelectorAll('.stat[data-open]').forEach(b => b.addEventListener('click', () => openFold(b.dataset.open)));
+  // File pickers styled as buttons: make them keyboard-operable.
+  for (const id of ['lblFileHome', 'lblFileReview']) {
+    $(id).addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $(id).querySelector('input').click(); } });
+  }
   setupEditor();
   setStage('primary');
   updateToolButtons();

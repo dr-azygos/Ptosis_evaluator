@@ -505,16 +505,16 @@ export function suggestions(m, lf, clinical, normal) {
       parts.push('measure levator function (capture Down & Up gaze)');
     }
     if (e.mcd > 10) parts.push('high lid crease suggests aponeurotic (involutional) ptosis');
-    if (!e.creaseAuto) parts.push('crease not detected automatically — confirm manually (faint/absent crease is common in congenital ptosis)');
-    if (e.mrd1 <= 2) parts.push('MRD1 ≤ 2 mm — likely visually significant; consider superior visual field testing');
+    if (!e.creaseAuto) parts.push('crease not detected automatically, confirm manually (faint or absent crease is common in congenital ptosis)');
+    if (e.mrd1 <= 2) parts.push('MRD1 ≤ 2 mm is likely visually significant; consider superior visual field testing');
     out.push(`${s}: ${g.label} (~${g.amount.toFixed(1)} mm). ${parts.join('; ')}.`);
   }
   if (EYES.some(s => m.eyes[s].pfh <= 0 || m.eyes[s].brow <= 0))
     out.unshift('⚠ Implausible values (negative fissure height or brow distance): markers are inverted or misplaced. Re-capture with the face upright, or correct the markers.');
   if (Math.abs(m.eyes.OD.mrd1 - m.eyes.OS.mrd1) >= 2)
-    out.push('Asymmetry ≥ 1.5 mm — check for Hering\'s dependence (lift the ptotic lid and re-check the fellow eye).');
-  if (clinical.jawwink) out.push('Jaw-winking noted — consider Marcus Gunn synkinesis before planning surgery.');
-  if (clinical.fatigue) out.push('Fatigability / variability noted — rule out ocular myasthenia (ice-pack test, AChR antibodies).');
-  if (clinical.bells === 'poor' || clinical.bells === 'absent') out.push('Poor Bell\'s phenomenon — under-correct and protect the cornea.');
+    out.push('Asymmetry ≥ 2 mm: check for Hering\'s dependence (lift the ptotic lid and re-check the fellow eye).');
+  if (clinical.jawwink) out.push('Jaw-winking noted: consider Marcus Gunn synkinesis before planning surgery.');
+  if (clinical.fatigue) out.push('Fatigability or variability noted: rule out ocular myasthenia (ice-pack test, AChR antibodies).');
+  if (clinical.bells === 'poor' || clinical.bells === 'absent') out.push('Poor Bell\'s phenomenon: under-correct and protect the cornea.');
   return out;
 }

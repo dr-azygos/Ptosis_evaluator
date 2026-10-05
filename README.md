@@ -70,8 +70,10 @@ To run it locally: `python3 -m http.server 8000`, then open `http://localhost:80
 ## Files
 
 ```
+DESIGN.md             Visual direction (palette, type, glass, motion) with the reason for each choice
 index.html            UI (home, live AR camera, review/editor)
-css/style.css         Mobile-first styles
+css/style.css         Mobile-first styles, entry and screen-change motion (off under reduced motion)
+js/glass.js           Liquid-glass refraction for controls floating over the camera image or photo
 js/app.js             Camera, AR overlay, capture, marker editor, report, history
 js/analysis.js        Landmark geometry, reflex/crease/limbus detection, measurements, grading
 js/learn.js           On-device learning from corrections; validation stats and CSV export
