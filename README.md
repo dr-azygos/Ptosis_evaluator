@@ -47,6 +47,19 @@ You can also analyse an existing photo with **Analyse a photo** or **Upload phot
 
 `R` reflex (yellow) · `U` upper lid (cyan) · `L` lower lid (green) · `C` crease (magenta) · `B` brow (orange) · `M`/`T` medial/lateral canthus
 
+## How the lid margins and limbus are found
+
+The face model (MediaPipe) only gives starting guesses; its lid points are often 1 to 2 mm off. Each captured photo then goes through an image-based detector (`js/eyeseg.js`):
+
+1. Each eye is resampled into an upright patch at a fixed scale (iris radius 32 px), so detection works the same at any camera distance.
+2. **Pupil and limbus:** Daugman's integro-differential operator. It finds the circle where the mean brightness along the side arcs (which the lids rarely cover) jumps most from dark iris to bright sclera. A clear pupil anchors the search, since the limbus is near-concentric with it. If the two eyes' corneal diameters differ by more than 10%, the clearer fit sets the size.
+3. **Lower lid, then upper lid:** a dynamic-programming path across the eye opening follows the margin edge (globe to lid for the lower lid, lashes/lid to globe for the upper lid), stays smooth, and ignores the reflex and the inside of the pupil. A robust quadratic fit gives the margin height exactly at the reflex column. The upper margin must stay above the lower one, and above the reflex when the reflex is visible.
+4. Where the detector is not confident, the face-model position is kept and Review shows "check U" or "check L". The traced edges are drawn as dotted lines in Review.
+
+### Benchmark
+
+`node test/bench.mjs 200` renders synthetic eyes with known truth (MRD1 −1 to 5.5 mm, four iris colours, five skin tones, lashes, blur, noise, head roll) and compares the face model alone with the detector. See the latest numbers in the commit history. Synthetic eyes check the method, not clinical accuracy; use the clinical-comparison panel for that.
+
 ## Learning from your corrections
 
 Every capture keeps the detector's original (raw) marker positions. When you press **Save & learn**, the app records, for each eye, how far you moved the U, L and C markers (mm along the vertical axis) and how much you resized the limbus (I markers). Once 5 eyes are recorded, new captures are pre-corrected by the median of the last 40 corrections, shrunk towards zero while there are few samples (factor n / (n + 5)). The applied correction is shown under Results and in the report.
@@ -76,6 +89,8 @@ css/style.css         Mobile-first styles, entry and screen-change motion (off u
 js/glass.js           Liquid-glass refraction for controls floating over the camera image or photo
 js/app.js             Camera, AR overlay, capture, marker editor, report, history
 js/analysis.js        Landmark geometry, reflex/crease/limbus detection, measurements, grading
+js/eyeseg.js          Image-based limbus and lid-margin detector (pure JS, also runs in Node)
+test/                 Synthetic-eye renderer and benchmark (node test/bench.mjs)
 js/learn.js           On-device learning from corrections; validation stats and CSV export
 ```
 
@@ -83,6 +98,6 @@ js/learn.js           On-device learning from corrections; validation stats and 
 
 * The results are photogrammetric estimates. The camera should be at eye level and the patient's gaze in the primary position. A camera above or below the eyes changes the MRD values.
 * Corneal size varies (about ±0.5 mm), and the HVID scale error passes straight into every measurement. Use the ruler mode when you need precise values.
-* Landmark lid margins can sit slightly inside the lash line. Always check the U and L markers in Review.
+* The lid detector can still be misled by heavy lashes over the cornea, mascara, a lid covering the pupil, or a blurred photo. Always check the U and L markers in Review, zoomed in.
 * If the lid covers the pupil and no reflex is visible, MRD1 is estimated from the iris centre and marked *reflex est.* In that case, lift the lid and measure clinically.
 * This is a decision-support and teaching tool. It is not a certified medical device. Confirm values clinically before surgical planning.

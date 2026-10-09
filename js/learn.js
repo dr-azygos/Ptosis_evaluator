@@ -1,7 +1,7 @@
 // On-device learning from the examiner's marker corrections, and validation of
 // app measurements against clinical (ruler / slit-lamp) values.
 // Nothing leaves the phone: samples live in localStorage.
-import { EYES, dist, mid, toUV, fromUV } from './analysis.js?v=12';
+import { EYES, dist, mid, toUV, fromUV } from './analysis.js?v=13';
 
 const LEARN_KEY = 'ptosis.learn.v1';
 const VALID_KEY = 'ptosis.validation.v1';

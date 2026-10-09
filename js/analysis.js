@@ -1,4 +1,5 @@
 // Geometry, image analysis and clinical measurement logic.
+import { analyzeEye } from './eyeseg.js?v=13';
 // All image-space points are {x, y} in source pixels.
 // "OD" = patient's right eye, "OS" = patient's left eye.
 
@@ -127,6 +128,28 @@ export class Sampler {
       minc[i] = Math.min(r, g, b);
     }
     return { x, y, w, h, gray, minc };
+  }
+  // RGBA window in the format eyeseg.js expects.
+  rgba(x, y, w, h) {
+    x = Math.max(0, Math.floor(x)); y = Math.max(0, Math.floor(y));
+    w = Math.min(this.W - x, Math.ceil(w)); h = Math.min(this.H - y, Math.ceil(h));
+    if (w < 8 || h < 8) return null;
+    this.c.width = w; this.c.height = h;
+    this.ctx.drawImage(this.src, x, y, w, h, 0, 0, w, h);
+    return { data: this.ctx.getImageData(0, 0, w, h).data, w, h, x0: x, y0: y };
+  }
+}
+
+// Run the image-based limbus / lid detector on one eye (see eyeseg.js).
+function detectEye(sampler, F, e, reflex) {
+  const r0 = e.iris.r, c = e.iris.c, half = 3.9 * r0;
+  const img = sampler.rgba(c.x - half, c.y - half, 2 * half, 2 * half);
+  if (!img) return null;
+  try {
+    return analyzeEye(img, { F, center: c, r0, upperPoly: e.upper, lowerPoly: e.lower, med: e.inner, lat: e.outer, reflex });
+  } catch (err) {
+    console.warn('eye detector failed', err);
+    return null;
   }
 }
 
@@ -280,64 +303,10 @@ export function findLimbus(sampler, F, c, r0) {
   return { r, c: fromUV(F, cu, C.v) };
 }
 
-// Lid margin refinement. The face model's lid contour has the right shape but
-// can sit too low or too high. Just outside the limbus, white sclera meets the
-// lid margin with strong contrast; find that edge in a few columns on each side,
-// and shift the model's lid point at the pupil by the median offset.
-export function refineLid(sampler, F, R, r, poly, mmpp, upper) {
-  const P = sampler.patch(
-    Math.min(...poly.map(p => p.x)) - 4, Math.min(...poly.map(p => p.y)) - 6 / mmpp,
-    Math.max(...poly.map(p => p.x)) - Math.min(...poly.map(p => p.x)) + 8,
-    Math.max(...poly.map(p => p.y)) - Math.min(...poly.map(p => p.y)) + 12 / mmpp);
-  if (!P) return null;
-  const at = p => sampleGray(P, p);
-  const dir = upper ? -1 : 1; // scanning away from the horizontal meridian
-  const win = 1.5 / mmpp, k = Math.max(1, Math.round(0.25 / mmpp));
-  const offsets = [], sides = new Set();
-  for (const side of [-1, 1]) {
-    for (const f of [1.2, 1.35, 1.5]) {
-      const u = R.u + side * f * r;
-      const lm = polyAt(F, poly, u);
-      if (!lm) continue;
-      const vLm = toUV(F, lm).v;
-      // From just off the meridian out to past the model's lid position.
-      const vA = R.v + dir * 0.15 * r, vB = vLm + dir * win;
-      const n = Math.round(Math.abs(vB - vA));
-      if (n < 4) continue;
-      const prof = [];
-      for (let i = 0; i <= n; i++) {
-        let a = 0, c = 0;
-        for (const du of [-1, 0, 1]) { const g = at(fromUV(F, u + du, vA + dir * i)); if (!Number.isNaN(g)) { a += g; c++; } }
-        prof.push(c ? a / c : NaN);
-      }
-      // First strong bright-sclera → darker-lid step met moving away from the
-      // meridian (later steps are crease / brow shadows), refined to its peak.
-      const thr = upper ? 18 : 12;
-      let best = 0, bi = -1;
-      for (let i = k; i < prof.length - k; i++) {
-        const drop = prof[i - k] - prof[i + k];
-        if (Math.abs(vA + dir * i - vLm) > win) continue;
-        if (bi < 0 && drop < thr) continue;
-        if (bi >= 0 && drop < best) break;
-        best = drop; bi = i;
-      }
-      if (bi < 0) continue;
-      // The side nearer the meridian must look like sclera (bright).
-      const sclera = prof.slice(0, bi).filter(x => !Number.isNaN(x));
-      if (!sclera.length || Math.max(...sclera) < 120) continue;
-      offsets.push(vA + dir * bi - vLm);
-      sides.add(side);
-    }
-  }
-  // Need agreement from both sides of the iris, within 0.7 mm.
-  if (sides.size < 2 || offsets.length < 3) return null;
-  offsets.sort((a, b) => a - b);
-  if ((offsets[offsets.length - 1] - offsets[0]) * mmpp > 0.7) return null;
-  const off = offsets[offsets.length >> 1];
-  return Math.max(-1.5 / mmpp, Math.min(1.5 / mmpp, off));
-}
-
 // ---------- auto-placement of measurement handles ----------
+// opts.lite: face model only (live preview). Otherwise the image detector
+// places the limbus and both lid margins, falling back to the face model
+// wherever it is not confident.
 export function autoPrimary(g, sampler, opts = {}) {
   const reflex = {}, found = {};
   for (const s of EYES) {
@@ -345,40 +314,41 @@ export function autoPrimary(g, sampler, opts = {}) {
     found[s] = !!det;
     reflex[s] = det ? { x: det.x, y: det.y } : { ...g[s].iris.c };
   }
-  const F = makeFrame(reflex.OD, reflex.OS, g.nose);
+  let F = makeFrame(reflex.OD, reflex.OS, g.nose);
+  const det = { OD: null, OS: null };
+  if (sampler && !opts.lite) {
+    for (const s of EYES) det[s] = detectEye(sampler, F, g[s], found[s] ? reflex[s] : null);
+    // No visible reflex (lid over the pupil): the fitted iris centre is a
+    // better stand-in than the face model's.
+    for (const s of EYES) if (!found[s] && det[s]?.iris) reflex[s] = { ...det[s].iris.c };
+    F = makeFrame(reflex.OD, reflex.OS, g.nose);
+  }
   const limb = {};
   for (const s of EYES) {
-    const det = sampler ? findLimbus(sampler, F, g[s].iris.c, g[s].iris.r) : null;
-    limb[s] = det ? { ...det, found: true } : { c: g[s].iris.c, r: g[s].iris.r, found: false };
+    if (det[s]?.iris) limb[s] = { c: det[s].iris.c, r: det[s].iris.r, found: true, conf: det[s].iris.conf };
+    else {
+      const old = sampler && !opts.lite ? findLimbus(sampler, F, g[s].iris.c, g[s].iris.r) : null;
+      limb[s] = old ? { ...old, found: true, conf: 0 } : { c: g[s].iris.c, r: g[s].iris.r, found: false, conf: 0 };
+    }
+  }
+  // Corneal diameters rarely differ by more than ~8% between the eyes; if
+  // they do here, trust the clearer fit for the size.
+  if (limb.OD.found && limb.OS.found && Math.abs(limb.OD.r - limb.OS.r) / ((limb.OD.r + limb.OS.r) / 2) > 0.1) {
+    const [good, bad] = limb.OD.conf >= limb.OS.conf ? ['OD', 'OS'] : ['OS', 'OD'];
+    limb[bad] = { ...limb[bad], r: limb[good].r, found: false };
   }
   const irisDiamPx = limb.OD.r + limb.OS.r; // mean diameter
   const mmpp = opts.hvid / irisDiamPx;
-  // Lid refinement is applied to both eyes or neither: correcting one eye only
-  // would create an artificial asymmetry.
-  const ref = { OD: {}, OS: {} };
-  if (sampler && opts.refineLids) {
-    for (const s of EYES) {
-      const R = toUV(F, reflex[s]);
-      ref[s].upper = refineLid(sampler, F, R, limb[s].r, g[s].upper, mmpp, true);
-      ref[s].lower = refineLid(sampler, F, R, limb[s].r, g[s].lower, mmpp, false);
-    }
-    for (const k of ['upper', 'lower']) {
-      if (ref.OD[k] == null || ref.OS[k] == null) { ref.OD[k] = null; ref.OS[k] = null; }
-    }
-  }
   const eyes = {};
   for (const s of EYES) {
-    const e = g[s], R = toUV(F, reflex[s]);
+    const e = g[s], R = toUV(F, reflex[s]), d = det[s];
     const L = toUV(F, limb[s].c), nasal = s === 'OD' ? 1 : -1;
-    let upper = polyAt(F, e.upper, R.u) || polyApex(F, e.upper);
-    let lower = polyAt(F, e.lower, R.u) || fromUV(F, R.u, toUV(F, e.lower[4]).v);
-    const ou = ref[s].upper, ol = ref[s].lower;
-    const lidRefined = ou != null;
-    if (ou != null) { const p = toUV(F, upper); upper = fromUV(F, p.u, p.v + ou); }
-    if (ol != null) { const p = toUV(F, lower); lower = fromUV(F, p.u, p.v + ol); }
+    const atRef = p => { const q = toUV(F, p); return fromUV(F, R.u, q.v); }; // detector point moved onto the reflex column
+    const upper = d?.upper ? atRef(d.upper.pt) : (polyAt(F, e.upper, R.u) || polyApex(F, e.upper));
+    const lower = d?.lower ? atRef(d.lower.pt) : (polyAt(F, e.lower, R.u) || fromUV(F, R.u, toUV(F, e.lower[4]).v));
     const brow = polyAt(F, e.brow, R.u) || e.brow[2];
     let crease = null;
-    if (sampler && !opts.skipCrease) crease = findCrease(sampler, F, upper, brow, mmpp);
+    if (sampler && !opts.skipCrease && !opts.lite) crease = findCrease(sampler, F, upper, brow, mmpp);
     const up = toUV(F, upper);
     eyes[s] = {
       h: {
@@ -388,18 +358,31 @@ export function autoPrimary(g, sampler, opts = {}) {
         limbN: fromUV(F, L.u + nasal * limb[s].r, L.v),
         limbT: fromUV(F, L.u - nasal * limb[s].r, L.v),
       },
-      flags: { reflex: found[s], crease: !!crease, limbus: limb[s].found, lid: lidRefined },
+      flags: { reflex: found[s], crease: !!crease, limbus: limb[s].found, lid: !!d?.upper, lowerLid: !!d?.lower },
       irisRpx: limb[s].r,
+      contours: d ? { upper: d.upper?.curve || null, lower: d.lower?.curve || null, iris: d.iris ? { c: d.iris.c, r: d.iris.r } : null } : null,
     };
   }
   return { kind: 'primary', irisDiamPx, eyes, nose: { ...g.nose } };
 }
 
-export function autoGaze(g, kind) {
+// Down / up gaze: the upper-lid apex. The detector's lid curve is used when it
+// is confident; in down-gaze the fissure is often too narrow and the face
+// model's contour is kept.
+export function autoGaze(g, kind, sampler, opts = {}) {
   const F = makeFrame(g.OD.inner, g.OS.inner, g.nose);
   const eyes = {};
   for (const s of EYES) {
-    eyes[s] = { h: { upper: polyApex(F, g[s].upper), med: g[s].inner, lat: g[s].outer }, flags: {}, irisRpx: g[s].iris.r };
+    let upper = polyApex(F, g[s].upper), detected = false, curve = null;
+    if (sampler && !opts.lite) {
+      const d = detectEye(sampler, makeFrame(g.OD.iris.c, g.OS.iris.c, g.nose), g[s], null);
+      if (d?.upper && d.upper.curve.length > 4) {
+        curve = d.upper.curve;
+        upper = curve.reduce((a, b) => (toUV(F, b).v < toUV(F, a).v ? b : a));
+        detected = true;
+      }
+    }
+    eyes[s] = { h: { upper, med: g[s].inner, lat: g[s].outer }, flags: { lid: detected }, irisRpx: g[s].iris.r, contours: curve ? { upper: curve } : null };
   }
   return { kind, irisDiamPx: g.OD.iris.r + g.OS.iris.r, eyes, nose: { ...g.nose } };
 }
@@ -440,6 +423,7 @@ export function measurePrimary(cap, settings) {
       scleralShowInf: Math.max(0, mrd2 - irisR),
       hvid: 2 * irisRpx * mmpp,
       reflexFound: flags.reflex, creaseAuto: flags.crease, limbusAuto: flags.limbus !== false,
+      lidAuto: flags.lid !== false, lowerAuto: flags.lowerLid !== false,
     };
   }
   out.icd = dist(cap.eyes.OD.h.med, cap.eyes.OS.h.med) * mmpp;

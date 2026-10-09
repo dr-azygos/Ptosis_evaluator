@@ -1,12 +1,12 @@
 import {
   EYES, dist, mid, makeFrame, toUV, fromUV, polyAt, extractGeometry, Sampler,
   autoPrimary, autoGaze, measurePrimary, measureGaze, ptosisGrade, lfGrade, suggestions,
-} from './analysis.js?v=12';
+} from './analysis.js?v=13';
 import {
   PARAMS, MIN_SAMPLES, learnedBias, applyLearned, recordCorrections, recordValidation, loadSamples,
   loadValidation, validationStats, validationCSV, blandAltmanSVG, resetLearning, resetValidation, describeLearned,
-} from './learn.js?v=12';
-import { initLiquidGlass, refreshLiquidGlass } from './glass.js?v=12';
+} from './learn.js?v=13';
+import { initLiquidGlass, refreshLiquidGlass } from './glass.js?v=13';
 
 const MP_VERSION = '0.10.14';
 const MP_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}`;
@@ -202,11 +202,26 @@ function label(ctx, text, p, color, u, align) {
 }
 const f1 = v => (v == null || Number.isNaN(v) ? '–' : (Math.abs(v) < 0.05 ? 0 : v).toFixed(1));
 
+// What the edge detector traced (thin dotted lines), so the examiner can see
+// what the markers were placed from.
+function drawContours(ctx, T, E, u) {
+  if (!E.contours) return;
+  for (const [k, col] of [['upper', 'rgba(53,208,255,.75)'], ['lower', 'rgba(125,255,107,.7)']]) {
+    const pts = E.contours[k];
+    if (!pts || pts.length < 2) continue;
+    ctx.save(); ctx.strokeStyle = col; ctx.lineWidth = 1.4 * u; ctx.setLineDash([2 * u, 3 * u]);
+    ctx.beginPath();
+    pts.forEach((p, i) => { const q = T.toS(p); i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); });
+    ctx.stroke(); ctx.restore();
+  }
+}
+
 // Overlay for a primary-gaze capture (live or review).
 function drawPrimaryOverlay(ctx, T, cap, m, u) {
   const F = m.F;
   for (const s of EYES) {
     const E = cap.eyes[s], h = E.h, me = m.eyes[s];
+    drawContours(ctx, T, E, u);
     const limb = h.limbN ? { c: mid(h.limbN, h.limbT), r: dist(h.limbN, h.limbT) / 2 } : null;
     const R = toUV(F, h.reflex), irisR = limb ? limb.r : E.irisRpx;
     const at = v => T.toS(fromUV(F, R.u, v));
@@ -259,6 +274,7 @@ function drawGazeOverlay(ctx, T, cap, m, u) {
   const F = m.F;
   for (const s of EYES) {
     const h = cap.eyes[s].h;
+    drawContours(ctx, T, cap.eyes[s], u);
     const M = toUV(F, h.med), L = toUV(F, h.lat), Up = toUV(F, h.upper);
     const t = (Up.u - M.u) / ((L.u - M.u) || 1);
     const foot = fromUV(F, Up.u, M.v + t * (L.v - M.v));
@@ -359,7 +375,7 @@ function smoothCap(prev, cur, t) {
   return cur;
 }
 function buildCap(g, kind, smp, opts = {}) {
-  const cap = kind === 'primary' ? autoPrimary(g, smp, { hvid: S.settings.hvid, ...opts }) : autoGaze(g, kind);
+  const cap = kind === 'primary' ? autoPrimary(g, smp, { hvid: S.settings.hvid, ...opts }) : autoGaze(g, kind, smp, opts);
   for (const s of EYES) cap.eyes[s].irisC = { ...g[s].iris.c };
   return cap;
 }
@@ -433,7 +449,7 @@ function liveLoop() {
     S.live.miss = 0;
     S.live.src = hit.src; S.live.W = hit.W; S.live.H = hit.H;
     sampler.setSource(hit.src, hit.W, hit.H);
-    S.live.cap = smoothCap(S.live.cap, buildCap(hit.g, S.stage, sampler, { skipCrease: true }), 0.45);
+    S.live.cap = smoothCap(S.live.cap, buildCap(hit.g, S.stage, sampler, { skipCrease: true, lite: true }), 0.45);
     S.live.geom = hit.g;
   } else {
     S.live.cap = null; S.live.geom = null;
@@ -576,7 +592,7 @@ async function captureFromSource(src, W, H, kind, isVideo) {
     if (l2) { c = c2; g = extractGeometry(l2, c.width, c.height); }
   }
   sampler.setSource(c, c.width, c.height);
-  const cap = buildCap(g, kind, sampler, { refineLids: true });
+  const cap = buildCap(g, kind, sampler);
   cap.canvas = c; cap.W = c.width; cap.H = c.height; cap.time = new Date().toISOString();
   if (kind === 'primary') {
     applyLearned(cap, S.settings.learn ? learnedBias() : null, measureForLearning);
@@ -970,6 +986,8 @@ function renderResults() {
   const cell = (r, s) => {
     let v = f1(r[s]);
     if (r.key === 'mrd1' && mp && !mp.eyes[s].reflexFound) v += '<small class="flag">reflex est.</small>';
+    if (r.key === 'mrd1' && mp && mp.eyes[s].reflexFound && !mp.eyes[s].lidAuto) v += '<small class="flag">check U</small>';
+    if (r.key === 'mrd2' && mp && !mp.eyes[s].lowerAuto) v += '<small class="flag">check L</small>';
     if (r.key === 'mcd' && mp && !mp.eyes[s].creaseAuto) v += '<small class="flag">check crease</small>';
     if (r.key === 'lf' && lf) v += `<small>${lfGrade(lf[s])}</small>`;
     if (r.key === 'hvid' && mp && !mp.eyes[s].limbusAuto) v += '<small class="flag">check I markers</small>';
@@ -992,6 +1010,7 @@ function renderResults() {
   if (!mp) tips.unshift('Capture primary gaze to grade ptosis.');
   if (mp && !lf) tips.push('Levator function not yet measured. Capture Down-gaze and Up-gaze.');
   if (Object.values(S.caps).some(c => c && c.manual)) tips.unshift('Face not detected automatically, so markers were placed at default positions. Drag every marker onto the eye, including the two I markers onto the nasal and temporal limbus (they set the mm scale).');
+  if (mp && !S.caps.primary.manual && EYES.some(s => !mp.eyes[s].lidAuto || !mp.eyes[s].lowerAuto)) tips.push('The lid edge was not clear in one eye, so that marker is the face model\'s estimate. Zoom in and place U or L on the lid margin.');
   if (mp && !S.caps.primary.manual && EYES.some(s => !mp.eyes[s].reflexFound)) tips.push('Corneal reflex not detected in one eye, so MRD1 is estimated from iris centre. Verify, or re-capture with the light on.');
   el.interp.innerHTML = tips.map(t => `<li>${t}</li>`).join('');
 }
